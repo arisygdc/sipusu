@@ -13,10 +13,7 @@ fn main() {
 
     let rt = match build_rt {
         Ok(v) => v,
-        Err(e) => {
-            println!("[runtime] error: {}", e.to_string());
-            panic!()
-        }
+        Err(e) => panic!("[runtime] error: {}", e.to_string())
     };
     
     rt.block_on(app())
@@ -32,11 +29,10 @@ async fn app() {
     let rthread1 = server.bind(bind_addr.clone());
     let thread1 = match rthread1 {
         Ok(v) => v,
-        Err(e) => {
-            println!("{}", e.to_string());
-            panic!()
-        }
+        Err(e) => panic!("{}", e.to_string())
     };
+
+    println!("[server] running on {}", &bind_addr);
 
     let _ = join!(thread1);
 }

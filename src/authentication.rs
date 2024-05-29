@@ -3,10 +3,11 @@ use std::{cell::RefCell, io};
 
 use bytes::{BufMut, BytesMut};
 use tokio::{fs::{File, OpenOptions}, io::{AsyncSeekExt, AsyncWriteExt}};
+
 const END_RECORD: u8 = 0x1E;
 const GROUP_SEPARATOR: u8 = 0x1D;
 const VALUE_SIGN: u8 = 0x2;
-// const 
+
 pub struct Authenticator {
     storage: RefCell<File>
 }
@@ -17,17 +18,30 @@ impl Authenticator {
         Ok(Self { storage })
     }
 
-    // FIXME: Error create_new when file exists
-    // TODO: open or create when file not existx
     #[inline]
     async fn prepare_storage() -> io::Result<File> {
-        OpenOptions::new()
+        let path = "./wow";
+        let mut storage_opt = OpenOptions::new();
+        let open_option = storage_opt
             .read(true)
             .write(true)
-            .append(true)
-            .create_new(true)
-            .open("./wow")
-            .await
+            .append(true);
+
+        let try_open = open_option
+            .open(path)
+            .await;
+
+        match try_open {
+            Ok(f) => Ok(f),
+            Err(err) => {
+                eprintln!("[storage] {}", err.to_string());
+                println!("[storage] creating...");
+                open_option
+                    .create_new(true)
+                    .open(path)
+                    .await
+            } 
+        }
     }
 
     // async fn get(&self, username: &str) -> AuthData {
@@ -117,6 +131,23 @@ impl AuthData {
 #[cfg(test)]
 mod test {
     use super::{AuthenticationStore, Authenticator};
+
+    #[tokio::test]
+    async fn ensure_create_or_open() {
+        match Authenticator::new().await {
+            Err(e) => {
+                eprintln!("[auth] {}", e.to_string());
+                panic!()
+            }, Ok(v) => v
+        };
+
+        match Authenticator::new().await {
+            Err(e) => {
+                eprintln!("[auth] {}", e.to_string());
+                panic!()
+            }, Ok(v) => v
+        };
+    }
     async fn authenticate(authctr: &impl AuthenticationStore, username: String, password: String) -> bool {
         authctr.create(username, password).await
     }

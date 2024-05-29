@@ -8,7 +8,7 @@ use crate::server::Handler;
 pub struct Proxy {
     // ticker: u32,
     // access_second: u32,
-    // access_total: u64,
+    // access_total: AtomicU64,
     authenticated: Arc<ActiveConnection>
 }
 
@@ -23,7 +23,6 @@ impl Proxy {
     }
 }
 
-
 impl Handler for Proxy {
     async fn process_request(&self, mut stream: TlsStream<TcpStream>) {
         if !Self::authenticate() {
@@ -31,29 +30,27 @@ impl Handler for Proxy {
             if let Err(_) = write_all {
                 return ;
             }
+        }
 
-            let mut buffer = BytesMut::with_capacity(1024);
-            let timeout_duration = Duration::from_secs(1);
-            match time::timeout(timeout_duration, stream.read(&mut buffer)).await {
-                Ok(Ok(n)) => {
-                    if n == 0 {
-                        println!("Client closed connection");
-                        return;
-                    }
-                    println!("Received: {}", String::from_utf8_lossy(&buffer[..n]));
+        let mut buffer = BytesMut::with_capacity(1024);
+        let timeout_duration = Duration::from_secs(1);
+        match time::timeout(timeout_duration, stream.read(&mut buffer)).await {
+            Ok(Ok(n)) => {
+                if n == 0 {
+                    println!("Client closed connection");
+                    return;
+                }
     
-                    // Push the connection to authenticated
-                    stream.write_all(b"Ok").await.expect("Failed to write response");
-                    self.authenticated.push_connection(stream).await;
-                }
-                Ok(Err(e)) => {
-                    eprintln!("Error reading from stream: {}", e);
-                    return;
-                }
-                Err(_) => {
-                    eprintln!("Read operation timed out");
-                    return;
-                }
+                stream.write_all(b"Ok").await.expect("Failed to write response");
+                self.authenticated.push_connection(stream).await;
+            }
+            Ok(Err(e)) => {
+                eprintln!("Error reading from stream: {}", e);
+                return;
+            }
+            Err(_) => {
+                eprintln!("Read operation timed out");
+                return;
             }
         }
     }

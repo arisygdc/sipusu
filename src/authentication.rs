@@ -1,6 +1,7 @@
 #![allow(dead_code)] 
 use std::{cell::RefCell, io::{self}};
 
+use argon2::Config;
 use bytes::{BufMut, BytesMut};
 use tokio::{fs::{File, OpenOptions}, io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt}};
 
@@ -195,15 +196,32 @@ pub trait AuthenticationStore {
     async fn create(&self, username: String, password: String) -> bool;
 }
 
+struct PasswordHashed {
+    password: String,
+    alg: String,
+    salt: Option<String>
+}
+
+impl PasswordHashed {
+    fn new_hash(pwd: &[u8]) -> Self {
+        let hash_cfg = Config::default();
+        let salt = String::from("random78");
+        let password = argon2::hash_encoded(pwd, salt.as_bytes(), &hash_cfg).unwrap();
+
+        Self { password, alg: String::from("argon2"), salt: Some(salt) }
+    }
+}
+
 struct AuthData {
     username: String,
-    password: String
+    password: String,
+    hashed_password: PasswordHashed
 }
 
 impl AuthData {
-    // TODO: hash password
     fn new(username: String, password: String) -> Self {
-        Self { username, password }
+        let hashed_password = PasswordHashed::new_hash(password.as_bytes());
+        Self { username, password, hashed_password }
     }
 
     fn read(&self, buffer: &mut impl BufMut) -> usize {

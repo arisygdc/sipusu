@@ -44,17 +44,16 @@ impl Authenticator {
         }
     }
 
-    #[allow(unused_variables)]
     async fn get(&self, username: &str) -> io::Result<Vec<u8>> {
         let mut storage = self.storage.borrow_mut();
 
-        let mut seek_idx = 1;
+        let mut seek_idx = 0;
 
         let buffer_cap = 2048;
         let mut buffer = BytesMut::with_capacity(buffer_cap);
         // TODO: Timeout
         loop {
-            let seek_from = io::SeekFrom::Current(seek_idx);
+            let seek_from = io::SeekFrom::Start(seek_idx);
             storage.seek(seek_from).await?;
             storage.read_buf(&mut buffer).await?;
 
@@ -68,12 +67,14 @@ impl Authenticator {
             }
 
             if buffer.len() != last_eor {
-                seek_idx = last_eor as i64
+                seek_idx += last_eor as u64
             }
 
             if buffer.len() < buffer_cap {
                 break;
             }
+
+            seek_idx += 1;
             unsafe { buffer.set_len(0) };
         }
         
@@ -112,7 +113,10 @@ fn get_comparator(username: &str, buffer: &mut BytesMut) -> (Vec<u8>, usize) {
             
             let f = &buffer[i..idx];
             let vv = f.to_vec();
-            val_state += vv.eq(username.as_bytes()) as u8;
+            println!("cmp username: {}, got: {}", &username, String::from_utf8(vv.clone()).unwrap_or_default());
+            let compared = vv.eq(username.as_bytes());
+            val_state = compared as u8 + 2;
+            i = idx;
         }
 
         else if val_state == 2 {
@@ -124,6 +128,7 @@ fn get_comparator(username: &str, buffer: &mut BytesMut) -> (Vec<u8>, usize) {
                 break;
             }
             val_state = 0;
+            i = idx
         } 
         
         else if val_state == 3 {
@@ -144,11 +149,12 @@ fn get_comparator(username: &str, buffer: &mut BytesMut) -> (Vec<u8>, usize) {
                 _ => {
                     let mut loop_buf = Vec::with_capacity(8);
                     while i < buffer.len() {
-                        i+=1;
                         let b = buffer[i];
                         if b == VALUE_SIGN {
+                            val_state = 1;
                             break;
                         }
+                        i+=1;
                         loop_buf.push(b);
                     }
                     
@@ -158,8 +164,8 @@ fn get_comparator(username: &str, buffer: &mut BytesMut) -> (Vec<u8>, usize) {
                         .unwrap();
                 }
             }
+            i += 1;
         }
-        i+=1;
     }
     (Vec::new(), last_eor)
 }
@@ -257,11 +263,26 @@ mod test {
             }, Ok(v) => v
         };
 
-        let t1 = authenticate(&authenticator, "arisy".to_owned(), "wadidawww l;".to_owned()).await;
-        let t2 = authenticate(&authenticator, "prikis".to_owned(), "kenllopm21".to_owned()).await;
-        let v = vec![t1, t2];
-        for vv in v {
-            assert!(vv)
+        struct TTable {
+            uname: String,
+            pwd: String,
+        }
+
+        let tdata= vec![
+            TTable { uname: "arisy".to_owned(), pwd: "wadidawww l;".to_owned() },
+            TTable { uname: "prikis".to_owned(), pwd: "kenllopm21".to_owned() }
+        ];
+
+        for (i, test) in tdata.into_iter().enumerate() {
+            println!("[inserting][{}] username: {}, password: {}", i, test.uname, test.pwd);
+            let inserted = authenticate(&authenticator, test.uname.clone(), test.pwd.clone()).await;
+            assert!(inserted);
+            
+            // print!("[get][{}] username: {}", i, test.uname);
+            let res = authenticator.get(&test.uname).await;
+            let pwd = String::from_utf8(res.unwrap_or_default()).unwrap_or_default();
+            // println!(", password: {}", pwd);
+            assert_eq!(test.pwd, pwd);
         }
     }
 }

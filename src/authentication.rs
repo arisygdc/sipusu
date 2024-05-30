@@ -101,14 +101,7 @@ impl AuthenticationStore for Authenticator {
             Ok(pwd) => pwd,
             Err(_) => return false
         };
-        
-        println!("{:?}", result_pwd);
-
-        // let salt = match result_pwd.salt {
-        //     Some(slt) => slt,
-        //     None => return false
-        // };
-
+    
         match argon2::verify_encoded(&result_pwd.password, password.as_bytes()) {
             Err(_) => false,
             Ok(l) => l 
@@ -197,8 +190,6 @@ pub trait AuthenticationStore {
 }
 
 
-#[derive(Debug)]
-// #[cfg_attr(test, derive(Debug))]
 struct PasswordHashed {
     password: String,
     alg: String,
@@ -227,7 +218,6 @@ impl Password {
     }
 }
 
-// #[cfg_attr(test, derive(Debug))]
 struct AuthData {
     username: String,
     password: Password,

@@ -1,27 +1,31 @@
 #![allow(dead_code)] 
 use std::{cell::RefCell, io::{self}};
 
-use argon2::Config;
+use argon2::{self, Config};
 use bytes::{BufMut, BytesMut};
 use tokio::{fs::{File, OpenOptions}, io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt}};
 
-const END_RECORD: u8 = 0x1E;
-const GROUP_SEPARATOR: u8 = 0x1D;
-const VALUE_SIGN: u8 = 0x2;
+// file specifier
+const SEGMENT_SIZE: usize = 311;
+
+// Table information
+const USERNAME_CAP: usize = 30;
+const PASSWORD_CAP: usize = 256;
+const ALG_CAP: usize = 10;
+const SALT_CAP: usize = 10;
 
 pub struct Authenticator {
     storage: RefCell<File>
 }
 
 impl Authenticator {
-    pub async fn new() -> Result<Self, io::Error> {
-        let storage = RefCell::new(Self::prepare_storage().await?);
+    pub async fn new(path: String) -> Result<Self, io::Error> {
+        let storage = RefCell::new(Self::prepare_storage(path).await?);
         Ok(Self { storage })
     }
 
     #[inline]
-    async fn prepare_storage() -> io::Result<File> {
-        let path = "./wow3";
+    async fn prepare_storage(path: String) -> io::Result<File> {
         let mut storage_opt = OpenOptions::new();
         let open_option = storage_opt
             .read(true)
@@ -29,7 +33,7 @@ impl Authenticator {
             .append(true);
 
         let try_open = open_option
-            .open(path)
+            .open(&path)
             .await;
 
         match try_open {
@@ -45,12 +49,13 @@ impl Authenticator {
         }
     }
 
-    async fn get(&self, username: &str) -> io::Result<Vec<u8>> {
+    async fn get(&self, username: &str) -> io::Result<PasswordHashed> {
         let mut storage = self.storage.borrow_mut();
 
         let mut seek_idx = 0;
 
-        let buffer_cap = 2048;
+        let segread_wide = 4;
+        let buffer_cap = segread_wide * SEGMENT_SIZE;
         let mut buffer = BytesMut::with_capacity(buffer_cap);
         // TODO: Timeout
         loop {
@@ -62,24 +67,23 @@ impl Authenticator {
                 break;
             }
 
-            let (pwd, last_eor) = get_comparator(username, &mut buffer);
-            if pwd.len() > 0 {
-                return Ok(pwd);
-            }
-
-            if buffer.len() != last_eor {
-                seek_idx += last_eor as u64
+            for i in 0..segread_wide {
+                let seg_read = SegmentRead::new(i*SEGMENT_SIZE, &buffer);
+                if let Some(res) = seg_read.evaluate(username) {
+                    return Ok(res);
+                }
             }
 
             if buffer.len() < buffer_cap {
                 break;
             }
 
-            seek_idx += 1;
+            seek_idx += SEGMENT_SIZE as u64 + 1;
             unsafe { buffer.set_len(0) };
         }
         
-        Ok(Vec::new())
+        let err = io::Error::new(io::ErrorKind::NotFound, "username not found".to_owned());
+        Err(err)
     }
 
     async fn write(&self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -91,97 +95,32 @@ impl Authenticator {
     }
 }
 
-// TODO: build as struct, buffer into iter
-/// vector leng == 0 indicates username not yet found
-/// return (password bytes, last END_RECORD position)
-fn get_comparator(username: &str, buffer: &mut BytesMut) -> (Vec<u8>, usize) {
-    // read value state
-    // state 1: get username value
-    // state 2: skip reading password
-    // state 3: return AuthData
-    let mut val_state: u8 = 0;
-    let mut val_counter = 0;
-
-    let mut i = 0;
-    let mut last_eor = 0;
-    
-    while i < buffer.len() {
-        if val_state == 1 {
-            let idx = i + val_counter;
-            if idx > buffer.len() {
-                break;
-            }
-            
-            let f = &buffer[i..idx];
-            let vv = f.to_vec();
-            println!("cmp username: {}, got: {}", &username, String::from_utf8(vv.clone()).unwrap_or_default());
-            let compared = vv.eq(username.as_bytes());
-            val_state = compared as u8 + 2;
-            i = idx;
-        }
-
-        else if val_state == 2 {
-            let idx = i + val_counter;
-            if idx > buffer.len() {
-                break;
-            } else if idx == buffer.len() {
-                last_eor += 2;
-                break;
-            }
-            val_state = 0;
-            i = idx
-        } 
-        
-        else if val_state == 3 {
-            let idx = i + val_counter;
-            if idx > buffer.len() {
-                break;
-            }
-            
-            let f = &buffer[i..idx];
-            return (f.to_vec(), last_eor);
-        } 
-        
-        else {
-            match buffer[i] {
-                END_RECORD => { last_eor = i; },
-                VALUE_SIGN => { val_state = (val_state % 2) + 1; },
-                GROUP_SEPARATOR => {},
-                _ => {
-                    let mut loop_buf = Vec::with_capacity(8);
-                    while i < buffer.len() {
-                        let b = buffer[i];
-                        if b == VALUE_SIGN {
-                            val_state = 1;
-                            break;
-                        }
-                        i+=1;
-                        loop_buf.push(b);
-                    }
-                    
-                    val_counter = String::from_utf8(loop_buf)
-                        .unwrap()
-                        .parse()
-                        .unwrap();
-                }
-            }
-            i += 1;
-        }
-    }
-    (Vec::new(), last_eor)
-}
-
 impl AuthenticationStore for Authenticator {
-    #[allow(unused_variables)]
     async fn authenticate(&self, username: &str, password: &str) -> bool {
-        true
+        let result_pwd = match self.get(username).await {
+            Ok(pwd) => pwd,
+            Err(_) => return false
+        };
+        
+        println!("{:?}", result_pwd);
+
+        // let salt = match result_pwd.salt {
+        //     Some(slt) => slt,
+        //     None => return false
+        // };
+
+        match argon2::verify_encoded(&result_pwd.password, password.as_bytes()) {
+            Err(_) => false,
+            Ok(l) => l 
+        }
     }
 
+    // TODO: check if username is exists, and produce error
     async fn create(&self, username: String, password: String) -> bool {
         let auth = AuthData::new(username, password);
 
-        let mut buffer = BytesMut::with_capacity(300);
-        auth.read(&mut buffer);
+        let mut buffer = BytesMut::with_capacity(311);
+        println!("read: {}", auth.read(&mut buffer));
         
         // TODO: ensure all data is written or rollback
         match self.write(&mut buffer).await {
@@ -191,11 +130,75 @@ impl AuthenticationStore for Authenticator {
     }
 }
 
+pub struct SegmentRead<'a> {
+    pos: usize,
+    src: &'a [u8]
+}
+
+impl<'a> SegmentRead<'a> {
+    fn new(pos: usize, src: &'a [u8]) -> Self {
+        SegmentRead { pos, src }
+    }
+
+    fn evaluate(mut self, target: &str) -> Option<PasswordHashed> {
+        let mut uname_bytes = Vec::with_capacity(USERNAME_CAP);
+        let end = self.pos+USERNAME_CAP;
+        for j in self.pos..end-(USERNAME_CAP - target.len()) {
+            uname_bytes.push(self.src[j])
+        }
+        
+        if !uname_bytes.eq(target.as_bytes()) {
+            return None;
+        }
+
+        self.pos = end;
+
+        let password = self.grab(PASSWORD_CAP);
+        let password = String::from_utf8(password).unwrap_or_default();
+
+        let alg = self.grab(ALG_CAP);
+        let alg = String::from_utf8(alg).unwrap_or_default();
+
+        let salt = self.grab(SALT_CAP);
+        let salt = {
+            if salt.len() == 0 {
+                return None;
+            }
+            String::from_utf8(salt).ok()
+        };
+
+        Some(PasswordHashed {
+            password, alg, salt
+        })
+        
+    }
+
+    fn grab(&mut self, cap: usize) -> Vec<u8> {
+        self.pos += 1;
+        let end = self.pos + cap;
+
+        let mut placeholder = Vec::with_capacity(PASSWORD_CAP);
+        for j in self.pos..end {
+            let val =  self.src[j];
+            if 0x0 == val {
+                break;
+            }
+            placeholder.push(val)
+        }
+
+        self.pos += cap;
+        placeholder
+    }
+}
+
 pub trait AuthenticationStore {
     async fn authenticate(&self, username: &str, password: &str) -> bool;
     async fn create(&self, username: String, password: String) -> bool;
 }
 
+
+#[derive(Debug)]
+// #[cfg_attr(test, derive(Debug))]
 struct PasswordHashed {
     password: String,
     alg: String,
@@ -203,48 +206,71 @@ struct PasswordHashed {
 }
 
 impl PasswordHashed {
-    fn new_hash(pwd: &[u8]) -> Self {
+    fn new(pwd: &[u8]) -> Self {
         let hash_cfg = Config::default();
         let salt = String::from("random78");
         let password = argon2::hash_encoded(pwd, salt.as_bytes(), &hash_cfg).unwrap();
 
-        Self { password, alg: String::from("argon2"), salt: Some(salt) }
+        PasswordHashed { password, alg: String::from("argon2"), salt: Some(salt) }
     }
 }
 
+enum Password {
+    Hashed(PasswordHashed),
+    Plain(String)
+}
+
+impl Password {
+    fn new_hash(pwd: &[u8]) -> Self {
+        let hashed = PasswordHashed::new(pwd);
+        Password::Hashed(hashed)
+    }
+}
+
+// #[cfg_attr(test, derive(Debug))]
 struct AuthData {
     username: String,
-    password: String,
-    hashed_password: PasswordHashed
+    password: Password,
 }
 
 impl AuthData {
     fn new(username: String, password: String) -> Self {
-        let hashed_password = PasswordHashed::new_hash(password.as_bytes());
-        Self { username, password, hashed_password }
+        let hashed_password = Password::new_hash(password.as_bytes());
+        Self { username, password: hashed_password }
     }
 
     fn read(&self, buffer: &mut impl BufMut) -> usize {
-        let mut counter = 1;
+        let mut counter = 0;
         
-        Self::parts(&self.username, &mut counter, buffer);
-        Self::parts(&self.password, &mut counter, buffer);
+        Self::parts(&self.username, USERNAME_CAP, &mut counter, buffer);
+        // FIXME: should not error when password is not plain text
+        let password = match &self.password {
+            Password::Plain(_) => panic!(),
+            Password::Hashed(pwd) => pwd
+        };
 
-        buffer.put_u8(END_RECORD);
+        Self::parts(&password.password, PASSWORD_CAP, &mut counter, buffer);
+        Self::parts(&password.alg, ALG_CAP, &mut counter, buffer);
+
+        let salt = password.salt.as_ref()
+            .map(|f| f.clone())
+            .unwrap_or_default();
+        Self::parts(&salt, SALT_CAP, &mut counter, buffer);
+
+        buffer.put_u8(0x0A);
         counter + 1
     }
 
     
-    fn parts(v: &str, counter: &mut usize, buffer: &mut impl BufMut) {
-        let v_str_leng = format!("{}", v.len());
-        buffer.put(v_str_leng.as_bytes());
-        
-        *counter += v_str_leng.len() + 1;
-        buffer.put_u8(VALUE_SIGN);
-        
-        *counter += v.len() + 1;
+    /// this function assume !v.len() > cap 
+    fn parts(v: &str, cap: usize, counter: &mut usize,buffer: &mut impl BufMut) {
+        *counter += cap + 1;
         buffer.put(v.as_bytes());
-        buffer.put_u8(GROUP_SEPARATOR);
+        if v.len() < cap {
+            buffer.put_bytes(0x0, cap - v.len());
+        }
+
+        buffer.put_u8(0x1f)
     }
 }
 
@@ -254,53 +280,50 @@ mod test {
 
     #[tokio::test]
     async fn ensure_create_or_open() {
-        match Authenticator::new().await {
+        match Authenticator::new(String::from("./piw")).await {
             Err(e) => {
                 eprintln!("[auth] {}", e.to_string());
                 panic!()
             }, Ok(v) => v
         };
 
-        match Authenticator::new().await {
+        match Authenticator::new(String::from("./piw")).await {
             Err(e) => {
                 eprintln!("[auth] {}", e.to_string());
                 panic!()
             }, Ok(v) => v
         };
     }
+
     async fn authenticate(authctr: &impl AuthenticationStore, username: String, password: String) -> bool {
         authctr.create(username, password).await
     }
 
     #[tokio::test]
-    async fn create_user() {
-        let authenticator = match Authenticator::new().await {
+    async fn create_user_checked() {
+        let authenticator = match Authenticator::new(String::from("./piw")).await {
             Err(e) => {
                 eprintln!("[auth] {}", e.to_string());
                 panic!()
             }, Ok(v) => v
         };
 
-        struct TTable {
+        struct DataTable {
             uname: String,
             pwd: String,
         }
 
-        let tdata= vec![
-            TTable { uname: "arisy".to_owned(), pwd: "wadidawww l;".to_owned() },
-            TTable { uname: "prikis".to_owned(), pwd: "kenllopm21".to_owned() }
+        let data_testing = vec![
+            DataTable { uname: "arisy".to_owned(), pwd: "wadidawww9823".to_owned() },
+            DataTable { uname: "prikis".to_owned(), pwd: "kenllopm21".to_owned() },
+            DataTable { uname: "jtrtt".to_owned(), pwd: "uohafw@43eughr\"ew2185few{}Q@$".to_owned() }
         ];
 
-        for (i, test) in tdata.into_iter().enumerate() {
-            println!("[inserting][{}] username: {}, password: {}", i, test.uname, test.pwd);
-            let inserted = authenticate(&authenticator, test.uname.clone(), test.pwd.clone()).await;
-            assert!(inserted);
-            
-            // print!("[get][{}] username: {}", i, test.uname);
-            let res = authenticator.get(&test.uname).await;
-            let pwd = String::from_utf8(res.unwrap_or_default()).unwrap_or_default();
-            // println!(", password: {}", pwd);
-            assert_eq!(test.pwd, pwd);
+        for test in data_testing {
+            let created = authenticator.create(test.uname.clone(), test.pwd.clone()).await;
+            assert!(created);
+            let authenticated = authenticator.authenticate(&test.uname, &test.pwd).await;
+            assert!(authenticated)
         }
     }
 }

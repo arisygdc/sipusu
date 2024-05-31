@@ -1,31 +1,56 @@
-use std::{sync::Arc, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::RwLock, time};
 use tokio_rustls::server::TlsStream;
 
-use crate::server::Handler;
+use crate::{authentication::{AuthData, AuthenticationStore, Authenticator}, server::Handler};
 
 pub struct Proxy {
     // ticker: u32,
     // access_second: u32,
     // access_total: AtomicU64,
+    authenticator: Authenticator,
     authenticated: Arc<ActiveConnection>
 }
 
 impl Proxy {
-    pub fn new(active_connection: Arc<ActiveConnection>) -> Self {
-        Self { authenticated: active_connection }
+    pub async fn new(active_connection: Arc<ActiveConnection>) -> io::Result<Self> {
+        let authenticator = Authenticator::new(String::from("user_store")).await?;
+        Ok(Self { authenticated: active_connection, authenticator })
     }
 
-    // TODO
-    fn authenticate() -> bool {
-        true
+    async fn authenticate(auth: &impl AuthenticationStore, auth_data: &AuthData) -> bool {
+        auth.authenticate(auth_data).await
     }
 }
 
 impl Handler for Proxy {
     async fn process_request(&self, mut stream: TlsStream<TcpStream>) {
-        if !Self::authenticate() {
+        let mut buffer = BytesMut::with_capacity(1024);
+
+        let timeout_duration = Duration::from_secs(1);
+        let auth_data;
+        match time::timeout(timeout_duration, stream.read(&mut buffer)).await {
+            Ok(Ok(n)) => {
+                if n == 0 {
+                    println!("Client closed connection");
+                    return;
+                }
+
+                auth_data = AuthData::decode(&buffer);
+            }
+            Ok(Err(e)) => {
+                eprintln!("Error reading from stream: {}", e);
+                return;
+            }
+            Err(_) => {
+                eprintln!("Read operation timed out");
+                return;
+            }
+        }
+        
+        
+        if Proxy::authenticate(&self.authenticator, &auth_data).await {
             let write_all = stream.write_all("wrong username or password".as_bytes()).await;
             if let Err(_) = write_all {
                 return ;

@@ -1,5 +1,5 @@
 #![allow(dead_code)] 
-use std::{cell::RefCell, io::{self}};
+use std::{io, mem};
 
 use argon2::{self, Config};
 use bytes::{BufMut, BytesMut};
@@ -14,18 +14,16 @@ const PASSWORD_CAP: usize = 256;
 const ALG_CAP: usize = 10;
 const SALT_CAP: usize = 10;
 
-pub struct Authenticator {
-    storage: RefCell<File>
-}
+pub struct Authenticator { storage_path: String }
 
 impl Authenticator {
     pub async fn new(path: String) -> Result<Self, io::Error> {
-        let storage = RefCell::new(Self::prepare_storage(path).await?);
-        Ok(Self { storage })
+        Self::prepare_storage(&path).await?;
+        Ok(Self{ storage_path: path })
     }
 
     #[inline]
-    async fn prepare_storage(path: String) -> io::Result<File> {
+    async fn prepare_storage(path: &String) -> io::Result<File> {
         let mut storage_opt = OpenOptions::new();
         let open_option = storage_opt
             .read(true)
@@ -33,7 +31,7 @@ impl Authenticator {
             .append(true);
 
         let try_open = open_option
-            .open(&path)
+            .open(path)
             .await;
 
         match try_open {
@@ -50,7 +48,10 @@ impl Authenticator {
     }
 
     async fn get(&self, username: &str) -> io::Result<PasswordHashed> {
-        let mut storage = self.storage.borrow_mut();
+        let mut storage = OpenOptions::new()
+            .read(true)
+            .open(&self.storage_path)
+            .await?;
 
         let mut seek_idx = 0;
 
@@ -87,33 +88,45 @@ impl Authenticator {
     }
 
     async fn write(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        let mut writer = self.storage.borrow_mut();
-        writer.seek(io::SeekFrom::End(0)).await?;
-        let written = writer.write(&buffer).await?;
-        writer.flush().await?;
+        let mut storage = OpenOptions::new()
+            .write(true)
+            .open(&self.storage_path)
+            .await?;
+        storage.seek(io::SeekFrom::End(0)).await?;
+        let written = storage.write(&buffer).await?;
+        storage.flush().await?;
         Ok(written)
     }
 }
 
 impl AuthenticationStore for Authenticator {
-    async fn authenticate(&self, username: &str, password: &str) -> bool {
-        let result_pwd = match self.get(username).await {
+    async fn authenticate(&self, auth: &AuthData) -> bool {
+        let result_pwd = match self.get(&auth.username).await {
             Ok(pwd) => pwd,
             Err(_) => return false
         };
-    
-        match argon2::verify_encoded(&result_pwd.password, password.as_bytes()) {
-            Err(_) => false,
-            Ok(l) => l 
+        
+        match &auth.password {
+            Password::Hashed(h) => {
+                result_pwd.password.eq(&h.password)
+            }, Password::Plain(s) => {
+                if let Ok(res) = argon2::verify_encoded(&result_pwd.password, s.as_bytes()) {
+                    return res;
+                }
+                false
+            }
         }
     }
 
     // TODO: check if username is exists, and produce error
-    async fn create(&self, username: String, password: String) -> bool {
-        let auth = AuthData::new(username, password);
+    async fn create(&self, auth: AuthData) -> bool {
+        let data_create = match auth.password {
+            Password::Plain(_) => auth.hash_password(),
+            Password::Hashed(_) => auth
+        };
 
         let mut buffer = BytesMut::with_capacity(311);
-        println!("read: {}", auth.read(&mut buffer));
+        println!("read: {}", data_create.read(&mut buffer));
         
         // TODO: ensure all data is written or rollback
         match self.write(&mut buffer).await {
@@ -185,11 +198,11 @@ impl<'a> SegmentRead<'a> {
 }
 
 pub trait AuthenticationStore {
-    async fn authenticate(&self, username: &str, password: &str) -> bool;
-    async fn create(&self, username: String, password: String) -> bool;
+    async fn authenticate(&self, auth: &AuthData) -> bool;
+    async fn create(&self, auth: AuthData) -> bool;
 }
 
-
+#[cfg_attr(test, derive(Clone))]
 struct PasswordHashed {
     password: String,
     alg: String,
@@ -206,6 +219,7 @@ impl PasswordHashed {
     }
 }
 
+#[cfg_attr(test, derive(Clone))]
 enum Password {
     Hashed(PasswordHashed),
     Plain(String)
@@ -218,15 +232,59 @@ impl Password {
     }
 }
 
-struct AuthData {
+#[cfg_attr(test, derive(Clone))]
+pub struct AuthData {
     username: String,
     password: Password,
 }
 
 impl AuthData {
-    fn new(username: String, password: String) -> Self {
+    // FIXME: it should return error instead of panic
+    pub fn decode(buffer: &[u8]) -> Self {
+        // let iterator = buffer.into_iter().enumerate();
+
+        let mut placeholder = Vec::with_capacity(2);
+        // let mut uname = String::new();
+        // let mut pwd = String::new();
+        let mut i = 0;
+        while i < buffer.len() {
+            match buffer[i] {
+                0x20 => {
+                    i += 1;
+                    continue
+                },
+                0x5B => break,
+                _ => ()
+            }
+            
+            let start = i;
+            let mut end = 0;
+            while i < buffer.len() {
+                if buffer[i] == 0x5D {
+                    end = i;
+                    break;
+                }
+            }
+            
+            let enc_str = &buffer[start..end];
+            let encd_str = String::from_utf8(enc_str.to_vec()).unwrap();
+            placeholder.push(encd_str);
+        }
+        
+        let username: String = mem::take(&mut placeholder[0]);
+        let password = mem::take(&mut placeholder[1]);
+        Self::new(username, password)
+    }
+
+    #[inline]
+    pub fn new_hashed(username: String, password: String) -> Self {
         let hashed_password = Password::new_hash(password.as_bytes());
         Self { username, password: hashed_password }
+    }
+
+    #[inline]
+    pub fn new(username: String, password: String) -> Self {
+        Self { username, password: Password::Plain(password) }
     }
 
     fn read(&self, buffer: &mut impl BufMut) -> usize {
@@ -250,7 +308,6 @@ impl AuthData {
         buffer.put_u8(0x0A);
         counter + 1
     }
-
     
     /// this function assume !v.len() > cap 
     fn parts(v: &str, cap: usize, counter: &mut usize,buffer: &mut impl BufMut) {
@@ -262,11 +319,21 @@ impl AuthData {
 
         buffer.put_u8(0x1f)
     }
+    
+    pub fn hash_password(mut self) -> Self {
+        if let Password::Plain(s) = self.password {
+            let hashed = PasswordHashed::new(s.as_bytes());
+            self.password = Password::Hashed(hashed)
+        }
+
+        self
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use super::{AuthenticationStore, Authenticator};
+    #![allow(unused)]
+    use super::{AuthenticationStore, Authenticator, AuthData};
 
     #[tokio::test]
     async fn ensure_create_or_open() {
@@ -283,10 +350,6 @@ mod test {
                 panic!()
             }, Ok(v) => v
         };
-    }
-
-    async fn authenticate(authctr: &impl AuthenticationStore, username: String, password: String) -> bool {
-        authctr.create(username, password).await
     }
 
     #[tokio::test]
@@ -310,9 +373,10 @@ mod test {
         ];
 
         for test in data_testing {
-            let created = authenticator.create(test.uname.clone(), test.pwd.clone()).await;
+            let auth_data = AuthData::new(test.uname, test.pwd);
+            let created = authenticator.create(auth_data.clone().hash_password()).await;
             assert!(created);
-            let authenticated = authenticator.authenticate(&test.uname, &test.pwd).await;
+            let authenticated = authenticator.authenticate(&auth_data).await;
             assert!(authenticated)
         }
     }

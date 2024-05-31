@@ -1,10 +1,11 @@
-use std::sync::Arc;
+mod server;
+mod connection;
+mod authentication;
 
+use std::sync::Arc;
 use connection::{ActiveConnection, Proxy};
 use server::{CertificatePath, Server};
 use tokio::{join, runtime};
-mod server;
-mod connection;
 
 fn main() {
     let build_rt = runtime::Builder::new_multi_thread()
@@ -21,7 +22,7 @@ fn main() {
 
 async fn app() {
     let active_connection = Arc::new(ActiveConnection::new());
-    let handler = Proxy::new(active_connection.clone());
+    let handler = Proxy::new(active_connection.clone()).await.unwrap();
     let cert = CertificatePath::new(String::from("/var/test_host/cert.pem"), String::from("/var/test_host/key.pem"));
     let server = Server::new(handler, Some(cert));
 

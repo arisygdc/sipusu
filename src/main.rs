@@ -1,6 +1,7 @@
 mod server;
 mod connection;
 mod authentication;
+mod core;
 
 use std::sync::Arc;
 use connection::{ActiveConnection, Proxy};

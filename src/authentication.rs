@@ -241,22 +241,18 @@ pub struct AuthData {
 impl AuthData {
     // FIXME: it should return error instead of panic
     pub fn decode(buffer: &[u8]) -> Self {
-        // let iterator = buffer.into_iter().enumerate();
-
         let mut placeholder = Vec::with_capacity(2);
-        // let mut uname = String::new();
-        // let mut pwd = String::new();
         let mut i = 0;
         while i < buffer.len() {
             match buffer[i] {
-                0x20 => {
+                0x5B => (),
+                _ => {
                     i += 1;
                     continue
-                },
-                0x5B => break,
-                _ => ()
+                }
             }
-            
+
+            i += 1;
             let start = i;
             let mut end = 0;
             while i < buffer.len() {
@@ -264,11 +260,16 @@ impl AuthData {
                     end = i;
                     break;
                 }
+                i+=1;
             }
             
             let enc_str = &buffer[start..end];
             let encd_str = String::from_utf8(enc_str.to_vec()).unwrap();
             placeholder.push(encd_str);
+        }
+
+        if placeholder.len() != 2 {
+            panic!()
         }
         
         let username: String = mem::take(&mut placeholder[0]);
@@ -376,6 +377,28 @@ mod test {
             let auth_data = AuthData::new(test.uname, test.pwd);
             let created = authenticator.create(auth_data.clone().hash_password()).await;
             assert!(created);
+            let authenticated = authenticator.authenticate(&auth_data).await;
+            assert!(authenticated)
+        }
+    }
+
+    #[tokio::test]
+    async fn decode_checked() {
+        let authenticator = match Authenticator::new(String::from("./piw")).await {
+            Err(e) => {
+                eprintln!("[auth] {}", e.to_string());
+                panic!()
+            }, Ok(v) => v
+        };
+
+        let words = vec![
+            "[arisy]\n[wadidawww9823]",
+            "[prikis]\n[kenllopm21]",
+            "[jtrtt]\n[uohafw@43eughr\"ew2185few{}Q@$]"
+        ];
+
+        for test in words {
+            let auth_data = AuthData::decode(test.as_bytes());
             let authenticated = authenticator.authenticate(&auth_data).await;
             assert!(authenticated)
         }

@@ -86,6 +86,6 @@ impl CertificatePath {
     }
 }
 
-pub trait Handler: Send + Sync + 'static {
+pub trait Handler {
     fn process_request(&self, stream: TlsStream<TcpStream>) -> impl std::future::Future<Output = ()> + Send;
 }

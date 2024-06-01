@@ -4,7 +4,7 @@ mod authentication;
 mod core;
 
 use std::io;
-use connection::{Proxy, online::Onlines};
+use connection::{handler::Proxy, online::Onlines};
 use server::{CertificatePath, Server};
 use tokio::{join, net::ToSocketAddrs, runtime, task::JoinHandle};
 

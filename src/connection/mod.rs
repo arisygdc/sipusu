@@ -1,8 +1,8 @@
 pub mod online;
-use std::{io::{self, ErrorKind}, net::SocketAddr, sync::{atomic::AtomicU32, Arc}, time::Duration};
+use std::{io::{self, ErrorKind}, net::SocketAddr, sync::atomic::AtomicU32, time::Duration};
 use bytes::BytesMut;
-use online::{ConnectedLine, Onlines};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, time};
+use online::ConnectedLine;
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::mpsc, time};
 use tokio_rustls::server::TlsStream;
 
 use crate::{authentication::{AuthData, AuthenticationStore, Authenticator}, server::Handler};
@@ -12,14 +12,14 @@ pub struct Proxy {
     // access_second: u32,
     access_total: AtomicU32,
     authenticator: Authenticator,
-    authenticated: Arc<Onlines>
+    push_connection: mpsc::Sender<ConnectedLine>
 }
 
 impl Proxy {
-    pub async fn new(active_connection: Arc<Onlines>) -> io::Result<Self> {
+    pub async fn new(push_connection: mpsc::Sender<ConnectedLine>) -> io::Result<Self> {
         let authenticator = Authenticator::new(String::from("user_store")).await?;
         let access_total = AtomicU32::default();
-        Ok(Self { authenticated: active_connection, authenticator, access_total })
+        Ok(Self { push_connection, authenticator, access_total })
     }
 
     async fn authenticate(auth: &impl AuthenticationStore, auth_data: &AuthData) -> bool {
@@ -105,7 +105,12 @@ impl Handler for Proxy {
         }
 
         let con_secstream = ConnectedLine::new(conn_id, stream, addr);
-
-        self.authenticated.push_connection(con_secstream).await;
+        if let Err(err) =  self.push_connection.send(con_secstream).await {
+            eprintln!("[channel] online: {}", err.to_string());
+            let mut line = err.0;
+            if let Err(e) = line.write(b"[Err]").await {
+                eprintln!("[stream]{}", e.to_string());
+            }
+        };
     }
 }

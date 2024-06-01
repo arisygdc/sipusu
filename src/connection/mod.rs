@@ -23,7 +23,6 @@ impl Proxy {
         auth.authenticate(auth_data).await
     }
 
-    // TODO: it should produce errors
     async fn read_stream(stream: &mut TlsStream<TcpStream>, buffer: &mut BytesMut, timeout_sec: u8) -> io::Result<()>{
         let timeout_duration = Duration::from_secs(timeout_sec as u64);
 

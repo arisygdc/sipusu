@@ -5,12 +5,12 @@ use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerCo
 
 pub type SecuredStream = TlsStream<TcpStream>;
 
-pub struct Server<H: Handler + Send + Sync + 'static> {
+pub struct Server<H: Wire + Send + Sync + 'static> {
     cert: Option<CertificatePath>,
     handler: Arc<H>
 }
 
-impl<H: Handler + Send + Sync + 'static> Server<H> {
+impl<H: Wire + Send + Sync + 'static> Server<H> {
     pub fn new(handler: H, cert: Option<CertificatePath>) -> Self {
         let handler = Arc::new(handler);
         Self { cert, handler }
@@ -54,12 +54,7 @@ impl<H: Handler + Send + Sync + 'static> Server<H> {
             
             let handle: Arc<H> = self.handler.clone();
             
-            let fut = async move {
-                let secured_stream = acceptor.accept(stream).await.unwrap();
-                handle.process_request(secured_stream, peer_addr).await;
-            };
-
-            tokio::task::spawn(fut);
+            handle.connect(stream, peer_addr, acceptor).await;
         }
     }
 }
@@ -88,6 +83,6 @@ impl CertificatePath {
     }
 }
 
-pub trait Handler {
-    fn process_request(&self, stream: TlsStream<TcpStream>, addr: SocketAddr) -> impl std::future::Future<Output = ()> + Send;
+pub trait Wire {
+    fn connect(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) -> impl std::future::Future<Output = ()> + Send;
 }

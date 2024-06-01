@@ -4,7 +4,7 @@ mod authentication;
 mod core;
 
 use std::io;
-use connection::{handler::Proxy, online::Onlines};
+use connection::handler::Proxy;
 use server::{CertificatePath, Server};
 use tokio::{join, net::ToSocketAddrs, runtime, task::JoinHandle};
 
@@ -27,12 +27,11 @@ async fn app() {
 
     println!("[server] running on {}", addr);
 
-    let _ = join!(joinhandle.0, joinhandle.1);
+    let _ = join!(joinhandle);
 }
 
-async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, JoinHandle<()>) {
-    let (active_connection, connection_sender) = Onlines::new();
-    let handler = Proxy::new(connection_sender).await.unwrap();
+async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> JoinHandle<io::Result<()>> {
+    let handler = Proxy::new().await.unwrap();
     let cert = CertificatePath::new(String::from("/var/test_host/cert.pem"), String::from("/var/test_host/key.pem"));
     let server = Server::new(handler, Some(cert));
 
@@ -41,8 +40,5 @@ async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<i
         Ok(v) => v,
         Err(e) => panic!("{}", e.to_string())
     };
-
-    let task2 = active_connection.stream_connection().await;
-
-    (task1, task2)
+    task1
 }

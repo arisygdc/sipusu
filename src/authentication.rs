@@ -181,19 +181,24 @@ impl<'a> SegmentRead<'a> {
 
     fn grab(&mut self, cap: usize) -> Vec<u8> {
         self.pos += 1;
+        
+        // let mut placeholder = Vec::with_capacity(PASSWORD_CAP);
+        let mut pos = self.pos;
         let end = self.pos + cap;
-
-        let mut placeholder = Vec::with_capacity(PASSWORD_CAP);
-        for j in self.pos..end {
-            let val =  self.src[j];
-            if 0x0 == val {
+        while pos < end {
+            let put = self.src[pos];
+            pos += 1;
+            if 0x0 == put {
                 break;
             }
-            placeholder.push(val)
         }
 
+        let placeholder = &self.src[pos..end];
+        let mut val = Vec::with_capacity(placeholder.len());
+        val.clone_from_slice(placeholder);
+
         self.pos += cap;
-        placeholder
+        placeholder.to_vec().clone()
     }
 }
 

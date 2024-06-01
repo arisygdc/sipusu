@@ -1,6 +1,8 @@
-use std::{io::{self, ErrorKind}, sync::Arc, time::Duration};
+pub mod online;
+use std::{io::{self, ErrorKind}, net::SocketAddr, sync::{atomic::AtomicU32, Arc}, time::Duration};
 use bytes::BytesMut;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::RwLock, time};
+use online::{ConnectedLine, Onlines};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, time};
 use tokio_rustls::server::TlsStream;
 
 use crate::{authentication::{AuthData, AuthenticationStore, Authenticator}, server::Handler};
@@ -8,15 +10,16 @@ use crate::{authentication::{AuthData, AuthenticationStore, Authenticator}, serv
 pub struct Proxy {
     // ticker: u32,
     // access_second: u32,
-    // access_total: AtomicU64,
+    access_total: AtomicU32,
     authenticator: Authenticator,
-    authenticated: Arc<ActiveConnection>
+    authenticated: Arc<Onlines>
 }
 
 impl Proxy {
-    pub async fn new(active_connection: Arc<ActiveConnection>) -> io::Result<Self> {
+    pub async fn new(active_connection: Arc<Onlines>) -> io::Result<Self> {
         let authenticator = Authenticator::new(String::from("user_store")).await?;
-        Ok(Self { authenticated: active_connection, authenticator })
+        let access_total = AtomicU32::default();
+        Ok(Self { authenticated: active_connection, authenticator, access_total })
     }
 
     async fn authenticate(auth: &impl AuthenticationStore, auth_data: &AuthData) -> bool {
@@ -40,12 +43,17 @@ impl Proxy {
             }
         }
     }
+
+    #[inline]
+    async fn increment_access(&self) -> u32 {
+        self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 impl Handler for Proxy {
     // TODO: connection id
     // TODO: create handshake object
-    async fn process_request(&self, mut stream: TlsStream<TcpStream>) {
+    async fn process_request(&self, mut stream: TlsStream<TcpStream>, addr: SocketAddr) {
         let mut buffer = BytesMut::with_capacity(1024);
 
         if let Err(read) = Self::read_stream(&mut stream, &mut buffer, 1).await {
@@ -55,11 +63,11 @@ impl Handler for Proxy {
             }
         }
 
-
         if buffer.len() < 30 {
             return ;
         }
 
+        let conn_id = self.increment_access().await;
         let auth_data = AuthData::decode(&buffer);
         
         if Proxy::authenticate(&self.authenticator, &auth_data).await {
@@ -96,21 +104,8 @@ impl Handler for Proxy {
             return ;
         }
 
-        self.authenticated.push_connection(stream).await;
-    }
-}
+        let con_secstream = ConnectedLine::new(conn_id, stream, addr);
 
-pub struct ActiveConnection {
-    conns: RwLock<Vec<TlsStream<TcpStream>>>
-}
-
-impl ActiveConnection {
-    pub fn new() -> Self {
-        Self { conns: RwLock::new(Vec::with_capacity(8)) }
-    }
-
-    async fn push_connection(&self, stream: TlsStream<TcpStream>)  {
-        let mut conn_writer = self.conns.write().await;
-        conn_writer.push(stream);
+        self.authenticated.push_connection(con_secstream).await;
     }
 }

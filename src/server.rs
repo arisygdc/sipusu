@@ -1,7 +1,9 @@
-use std::{fs::File, io::{self, BufReader}, path::Path, sync::Arc};
+use std::{fs::File, io::{self, BufReader}, net::SocketAddr, path::Path, sync::Arc};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, task::JoinHandle};
 use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, server::TlsStream, TlsAcceptor};
+
+pub type SecuredStream = TlsStream<TcpStream>;
 
 pub struct Server<H: Handler + Send + Sync + 'static> {
     cert: Option<CertificatePath>,
@@ -47,14 +49,14 @@ impl<H: Handler + Send + Sync + 'static> Server<H> {
         let listener = TcpListener::bind(&addr).await?;
         
         loop {
-            let (stream, _peer_addr) = listener.accept().await?;
+            let (stream, peer_addr) = listener.accept().await?;
             let acceptor = acceptor.clone();
             
             let handle: Arc<H> = self.handler.clone();
             
             let fut = async move {
                 let secured_stream = acceptor.accept(stream).await.unwrap();
-                handle.process_request(secured_stream).await;
+                handle.process_request(secured_stream, peer_addr).await;
             };
 
             tokio::task::spawn(fut);
@@ -87,5 +89,5 @@ impl CertificatePath {
 }
 
 pub trait Handler {
-    fn process_request(&self, stream: TlsStream<TcpStream>) -> impl std::future::Future<Output = ()> + Send;
+    fn process_request(&self, stream: TlsStream<TcpStream>, addr: SocketAddr) -> impl std::future::Future<Output = ()> + Send;
 }

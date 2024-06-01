@@ -4,7 +4,7 @@ mod authentication;
 mod core;
 
 use std::sync::Arc;
-use connection::{ActiveConnection, Proxy};
+use connection::{Proxy, online::Onlines};
 use server::{CertificatePath, Server};
 use tokio::{join, runtime};
 
@@ -22,7 +22,7 @@ fn main() {
 }
 
 async fn app() {
-    let active_connection = Arc::new(ActiveConnection::new());
+    let active_connection = Arc::new(Onlines::new());
     let handler = Proxy::new(active_connection.clone()).await.unwrap();
     let cert = CertificatePath::new(String::from("/var/test_host/cert.pem"), String::from("/var/test_host/key.pem"));
     let server = Server::new(handler, Some(cert));

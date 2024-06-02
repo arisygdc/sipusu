@@ -1,4 +1,4 @@
-use std::{io::{self, ErrorKind}, net::SocketAddr, sync::atomic::AtomicU32, time::Duration};
+use std::{io::{self, ErrorKind}, net::SocketAddr, sync::{atomic::AtomicU32, Arc}, time::Duration};
 use bytes::BytesMut;
 use super::online::ConnectedLine;
 use tokio::{io::AsyncReadExt, net::TcpStream, time};
@@ -6,17 +6,18 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 use crate::{authentication::{AuthData, AuthenticationStore, Authenticator}, server::Wire};
 
+#[allow(dead_code)]
 pub struct Proxy {
     // ticker: u32,
     // access_second: u32,
     access_total: AtomicU32,
-    authenticator: Authenticator,
+    authenticator: Arc<Authenticator>,
     // push_connection: mpsc::Sender<ConnectedLine>
 }
 
 impl Proxy {
     pub async fn new() -> io::Result<Self> {
-        let authenticator = Authenticator::new(String::from("user_store")).await?;
+        let authenticator = Arc::new(Authenticator::new(String::from("user_store")).await?);
         let access_total = AtomicU32::default();
         Ok(Self { authenticator, access_total })
     }
@@ -44,69 +45,6 @@ impl Proxy {
     }
 }
 
-// impl Handler for Proxy {
-//     async fn process_request(&self, mut stream: TlsStream<TcpStream>, addr: SocketAddr) {
-//         let mut buffer = BytesMut::with_capacity(1024);
-
-//         if let Err(read) = Self::read_stream(&mut stream, &mut buffer, 1).await {
-//             if let Err(e)  = stream.write(read.to_string().as_bytes()).await {
-//                 eprint!("{}", e.to_string());
-//                 return ;
-//             }
-//         }
-
-//         if buffer.len() < 30 {
-//             return ;
-//         }
-
-//         let conn_id = self.increment_access().await;
-//         let auth_data = AuthData::decode(&buffer);
-        
-//         if Proxy::authenticate(&self.authenticator, &auth_data).await {
-//             let write_all = stream.write_all("wrong username or password".as_bytes()).await;
-//             if let Err(_) = write_all {
-//                 return ;
-//             }
-//         }
-
-//         if let Err(e) = stream.write(b"[SYNC]").await {
-//             eprintln!("[stream]{}", e.to_string());
-//             return ;
-//         }
-
-//         buffer.clear();
-//         if let Err(read) = Self::read_stream(&mut stream, &mut buffer, 1).await {
-//             if let Err(e)  = stream.write(read.to_string().as_bytes()).await {
-//                 eprint!("{}", e.to_string());
-//                 return ;
-//             }
-//         }
-
-//         if buffer.len() < 5 {
-//             return ;
-//         }
-
-//         let ack = &buffer[0..5];
-//         if !ack.eq("[ACK]".as_bytes()) {
-//             return ;
-//         }
-
-//         if let Err(e) = stream.write(b"[OK]").await {
-//             eprintln!("[stream]{}", e.to_string());
-//             return ;
-//         }
-
-//         let con_secstream = ConnectedLine::new(conn_id, stream, addr);
-//         if let Err(err) =  self.push_connection.send(con_secstream).await {
-//             eprintln!("[channel] online: {}", err.to_string());
-//             let mut line = err.0;
-//             if let Err(e) = line.write(b"[Err]").await {
-//                 eprintln!("[stream]{}", e.to_string());
-//             }
-//         };
-//     }
-// }
-
 // TODO: authentication
 impl Wire for Proxy {
     async fn connect(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) {
@@ -119,8 +57,13 @@ impl Wire for Proxy {
                 return ;
             }
         };
-        let line = ConnectedLine::new(id, secured_stream, addr);
-        line.handshake().await;
-        line.online();
+        let line = match ConnectedLine::new(id, secured_stream, addr)
+            .handshake(Some(self.authenticator.clone())).await 
+        {
+            Some(v) => v,
+            None => return,
+        };
+        line.online()
+        // line.online();
     }
 }

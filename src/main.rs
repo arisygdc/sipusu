@@ -5,7 +5,6 @@ mod core;
 mod protocol;
 
 use std::io;
-use connection::handler::Proxy;
 use server::{CertificatePath, Server};
 use tokio::{join, net::ToSocketAddrs, runtime, task::JoinHandle};
 
@@ -32,9 +31,9 @@ async fn app() {
 }
 
 async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> JoinHandle<io::Result<()>> {
-    let handler = Proxy::new().await.unwrap();
     let cert = CertificatePath::new("/var/test_host/server_cert.pem", "/var/test_host/server_key.pem");
-    let server = Server::new(handler, Some(cert));
+    
+    let server = Server::new(Some(cert)).await;
 
     let rtask1 = server.bind(addr);
     let task1 = match rtask1 {

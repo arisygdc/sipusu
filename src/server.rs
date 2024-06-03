@@ -3,16 +3,21 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, task::JoinHandle};
 use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, TlsAcceptor};
 
+use crate::connection::handler::Proxy;
+
 pub const TLS_CERT: &str = "/var/test_host/cert.pem";
 pub const TLS_KEY: &str = "/var/test_host/key.pem";
 
-pub struct Server<H: Wire + Send + Sync + 'static> {
+pub struct Server {
     cert: Option<CertificatePath>,
-    handler: Arc<H>
+    handler: Arc<Proxy>,
+    // c_sender: 
 }
 
-impl<H: Wire + Send + Sync + 'static> Server<H> {
-    pub fn new(handler: H, cert: Option<CertificatePath>) -> Self {
+impl Server
+{
+    pub async fn new(cert: Option<CertificatePath>) -> Self {
+        let handler = Proxy::new().await.unwrap();
         let handler = Arc::new(handler);
         Self { cert, handler }
     }
@@ -37,7 +42,6 @@ impl<H: Wire + Send + Sync + 'static> Server<H> {
             .with_single_cert(certs, key)   
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
-        
         let join_handle = tokio::spawn(self.bind_secure(addr, tls_config));
         Ok(join_handle)
     }
@@ -55,7 +59,7 @@ impl<H: Wire + Send + Sync + 'static> Server<H> {
             let acceptor = acceptor.clone();
             
             println!("[stream] incoming");
-            let handle: Arc<H> = self.handler.clone();
+            let handle = self.handler.clone();
             handle.connect_with_tls(stream, peer_addr, acceptor).await;
         }
     }
@@ -69,7 +73,7 @@ impl<H: Wire + Send + Sync + 'static> Server<H> {
             let (stream, peer_addr) = listener.accept().await?;
             
             println!("[stream] incoming");
-            let handle: Arc<H> = self.handler.clone();
+            let handle = self.handler.clone();
             handle.connect(stream, peer_addr).await;
         }
     }

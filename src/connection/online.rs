@@ -35,15 +35,6 @@ impl<S> ConnectedLine<S>
         Some(identity)
     }
 
-    // pub async fn authenticate<A>(&mut self, actr: Arc<A>) -> io::Result<()>
-    //     where A: AuthenticationStore
-    // {
-    //     // self.socket.write("".as_slice()).await?;
-    //     // let buffer = BytesMut::with_capacity(capacity)
-    //     // actr.authenticate(auth);
-    //     Ok(())
-    // }
-
     pub fn online(mut self, identity: OnlineIdentity) {
         let fut = async move {
             loop {

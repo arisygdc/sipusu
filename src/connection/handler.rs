@@ -3,9 +3,9 @@ use bytes::BytesMut;
 use super::online::{ConnectedLine, Streamer};
 use tokio::{io::AsyncReadExt, net::TcpStream, time};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
+use crate::server::Wire;
 
-use crate::server::{SecuredStream, Wire};
-
+pub type SecuredStream = TlsStream<TcpStream>;
 impl Streamer for SecuredStream {}
 impl Streamer for TcpStream {}
 

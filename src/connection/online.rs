@@ -3,7 +3,7 @@ use std::{io::{self, ErrorKind}, net::SocketAddr, time::Duration};
 use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time};
 
-use crate::server::SecuredStream;
+use super::handler::SecuredStream;
 
 pub trait Streamer: 
 AsyncReadExt 

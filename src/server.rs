@@ -1,9 +1,7 @@
 use std::{fs::File, io::{self, BufReader}, net::SocketAddr, path::{Path, PathBuf}, sync::Arc};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, task::JoinHandle};
-use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, server::TlsStream, TlsAcceptor};
-
-pub type SecuredStream = TlsStream<TcpStream>;
+use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, TlsAcceptor};
 
 pub struct Server<H: Wire + Send + Sync + 'static> {
     cert: Option<CertificatePath>,

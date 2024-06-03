@@ -1,104 +1,97 @@
 // #![allow(unused)]
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{io::{self, ErrorKind}, net::SocketAddr, time::Duration};
 use bytes::BytesMut;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{mpsc, Mutex, MutexGuard}, task::JoinHandle};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time};
 
-use crate::server::SecuredStream;
-type ConnectionHolders = Mutex<Vec<ConnectedLine>>;
+use super::handler::SecuredStream;
 
-pub struct Onlines {
-    conns: Arc<ConnectionHolders>,
-    rx: mpsc::Receiver<ConnectedLine>
-}
-
-impl Onlines {
-    pub fn new() -> (Self, mpsc::Sender<ConnectedLine>) {
-        let (tx, rx) = mpsc::channel(4);
-        let conns = Arc::new(Mutex::new(Vec::with_capacity(8)));
-        (Self { conns, rx }, tx)
-    }
-
-    pub async fn stream_connection(self) -> JoinHandle<()>  {
-        let share_conns = self.conns.clone();
-        let mut rx = self.rx;
-        
-        tokio::task::spawn(async move {
-            while let Some(mut conn) = rx.recv().await {
-                let mut writer = share_conns.lock().await;
-                if let Err(e) = conn.write(b"[OK]").await {
-                    eprintln!("[stream] {}", e.to_string());
-                } else {
-                    writer.push(conn);
-                }
-            }
-        });
-
-        let share_conns = self.conns.clone();
-        let fut = async move {
-            loop {
-                let mut conns = share_conns.lock().await;
-                let remover = iterate_stream(&mut conns).await;
-
-                if remover.len() > 0 {
-                    continue;
-                }
-                
-                let remove_conn = share_conns.clone();
-                tokio::task::spawn(async move {
-                    let mut conns = remove_conn.lock().await;
-                    for ridx in remover {
-                        conns.remove(ridx);
-                    }
-                });
-            }
-        };
-
-        tokio::spawn(fut)
-    }
-}
+pub trait Streamer: 
+AsyncReadExt 
++ AsyncWriteExt
++ std::marker::Unpin {}
 
 #[allow(dead_code)]
-pub struct ConnectedLine {
+pub struct ConnectedLine<S> 
+    where S: Streamer + Send + Sync + 'static
+{
     id: u32,
-    socket: SecuredStream,
-    addr: SocketAddr
+    socket: S,
+    addr: SocketAddr,
 }
 
-impl ConnectedLine {
-    pub fn new(id: u32, socket: SecuredStream, addr: SocketAddr) -> Self {
+impl<S> ConnectedLine<S> 
+    where S: Streamer + Send + Sync + 'static
+{
+    pub fn new(id: u32, socket: S, addr: SocketAddr) -> Self {
         Self { id, socket, addr }
     }
 
-    pub async fn write(&mut self, src: &[u8]) -> io::Result<usize> {
-        self.socket.write(src).await
+    pub async fn handshake(&mut self) -> Option<OnlineIdentity> {
+        let state = OnlineState::Publisher;
+        let identity = OnlineIdentity {
+            topic: "fwef".to_owned(),
+            state,
+        };
+        Some(identity)
     }
 
-    pub async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>  {
-        self.socket.read(buf).await
+    // pub async fn authenticate<A>(&mut self, actr: Arc<A>) -> io::Result<()>
+    //     where A: AuthenticationStore
+    // {
+    //     // self.socket.write("".as_slice()).await?;
+    //     // let buffer = BytesMut::with_capacity(capacity)
+    //     // actr.authenticate(auth);
+    //     Ok(())
+    // }
+
+    pub fn online(mut self, identity: OnlineIdentity) {
+        let fut = async move {
+            loop {
+                let mut buf = BytesMut::with_capacity(256);
+                match self.socket.read(&mut buf).await {
+                    Ok(0) => {
+                        // Connection was closed
+                        return ();
+                    }
+                    Ok(n) => {
+                        // Handle received data
+                        println!("Received: {:?}", &buf[..n]);
+                    }
+                    Err(e) => {
+                        eprintln!("[listen] Error: {}", e);
+                        return ();
+                    }
+                }
+            }
+        };
+        tokio::task::spawn(fut);
     }
 }
 
-/// return disconnected line
-#[inline]
-async fn iterate_stream<'grd>(conns: &mut MutexGuard<'grd, Vec<ConnectedLine>>) -> Vec<usize> {
-    let mut remover = Vec::new();
-    for (i, conn) in conns.iter_mut().enumerate() {
-        let mut buf = BytesMut::new();
-        match conn.read(&mut buf).await {
-            Ok(0) => {
-                // Connection was closed
-                // remove_indices.push(i);
-                remover.push(i)
+async fn read_timeout(stream: &mut SecuredStream, buffer: &mut BytesMut, timeout_sec: u8) -> io::Result<()>{
+    let timeout_duration = Duration::from_secs(timeout_sec as u64);
+
+    match time::timeout(timeout_duration, stream.read(buffer)).await {
+        Ok(read_result) => {
+            let read_leng = read_result?;
+            if read_leng == 0 {
+                println!("Client closed connection");
+                return Err(io::Error::new(ErrorKind::ConnectionAborted, "Client closed connection"));
             }
-            Ok(n) => {
-                // Handle received data
-                println!("Received: {:?}", &buf[..n]);
-            }
-            Err(e) => {
-                eprintln!("[listen] Error: {}", e);
-                // remove_indices.push(i);
-            }
+            return Ok(());
+        }
+        Err(_) => {
+            return Err(io::Error::new(ErrorKind::TimedOut, "Reading stream timeout"));
         }
     }
-    remover
+}
+
+pub struct OnlineIdentity {
+    topic: String,
+    state: OnlineState
+}
+
+enum OnlineState {
+    Publisher,
+    Subscriber
 }

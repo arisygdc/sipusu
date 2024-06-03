@@ -1,19 +1,20 @@
-use std::{fs::File, io::{self, BufReader}, net::SocketAddr, path::Path, sync::Arc};
+use std::{fs::File, io::{self, BufReader}, net::SocketAddr, path::{Path, PathBuf}, sync::Arc};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, task::JoinHandle};
-use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, server::TlsStream, TlsAcceptor};
+use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, TlsAcceptor};
 
 pub const TLS_CERT: &str = "/var/test_host/cert.pem";
 pub const TLS_KEY: &str = "/var/test_host/key.pem";
 
 pub type SecuredStream = TlsStream<TcpStream>;
 
-pub struct Server<H: Handler + Send + Sync + 'static> {
+
+pub struct Server<H: Wire + Send + Sync + 'static> {
     cert: Option<CertificatePath>,
     handler: Arc<H>
 }
 
-impl<H: Handler + Send + Sync + 'static> Server<H> {
+impl<H: Wire + Send + Sync + 'static> Server<H> {
     pub fn new(handler: H, cert: Option<CertificatePath>) -> Self {
         let handler = Arc::new(handler);
         Self { cert, handler }
@@ -26,21 +27,22 @@ impl<H: Handler + Send + Sync + 'static> Server<H> {
     where
         A: ToSocketAddrs + Send + Sync + 'static
     {
-        let cert = self.cert.as_ref()
-            .ok_or(io::Error::new(
-                io::ErrorKind::NotFound, "certificate"
-            ))?;
+        let c_loader = match &self.cert {
+            Some(cert) => cert, 
+            None => return Ok(tokio::spawn(self.bind_unsecure(addr)))
+        };
 
-        let certs = cert.load_certs()?;
-        let key = cert.load_keys()?;
+        let certs = c_loader.load_certs()?;
+        let key = c_loader.load_keys()?;
 
         let tls_config = tokio_rustls::rustls::ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(certs, key)
+            .with_single_cert(certs, key)   
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
-        let fut = self.bind_secure(addr, tls_config);
-        Ok(tokio::spawn(fut))
+        
+        let join_handle = tokio::spawn(self.bind_secure(addr, tls_config));
+        Ok(join_handle)
     }
 
     async fn bind_secure<A>(
@@ -55,31 +57,42 @@ impl<H: Handler + Send + Sync + 'static> Server<H> {
             let (stream, peer_addr) = listener.accept().await?;
             let acceptor = acceptor.clone();
             
+            println!("[stream] incoming");
             let handle: Arc<H> = self.handler.clone();
-            
-            let fut = async move {
-                let secured_stream = acceptor.accept(stream).await.unwrap();
-                handle.process_request(secured_stream, peer_addr).await;
-            };
+            handle.connect_with_tls(stream, peer_addr, acceptor).await;
+        }
+    }
 
-            tokio::task::spawn(fut);
+    async fn bind_unsecure<A>(
+        self,
+        addr: A,
+    ) -> io::Result<()> where A: ToSocketAddrs + Send {
+        let listener = TcpListener::bind(&addr).await?;
+        loop {
+            let (stream, peer_addr) = listener.accept().await?;
+            
+            println!("[stream] incoming");
+            let handle: Arc<H> = self.handler.clone();
+            handle.connect(stream, peer_addr).await;
         }
     }
 }
 
 pub struct CertificatePath {
-    cert: String,
-    private_key: String
+    cert: PathBuf,
+    private_key: PathBuf
 }
 
 impl Default for CertificatePath {
     fn default() -> Self {
-        Self::new(TLS_CERT.to_string(), TLS_KEY.to_string())
+        Self::new(TLS_CERT, TLS_KEY)
     }
 }
 
 impl CertificatePath {
-    pub fn new(cert: String, private_key: String) -> Self {
+    pub fn new(cert: &str, private_key: &str) -> Self {
+        let cert = Path::new(&cert).to_owned(); 
+        let private_key = Path::new(&private_key).to_owned();
         CertificatePath { cert, private_key }
     }
 
@@ -97,6 +110,7 @@ impl CertificatePath {
     }
 }
 
-pub trait Handler {
-    fn process_request(&self, stream: TlsStream<TcpStream>, addr: SocketAddr) -> impl std::future::Future<Output = ()> + Send;
+pub trait Wire {
+    fn connect_with_tls(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) -> impl std::future::Future<Output = ()> + Send;
+    fn connect(&self, stream: TcpStream, addr: SocketAddr) -> impl std::future::Future<Output = ()> + Send;
 }

@@ -49,6 +49,7 @@ impl Proxy {
 impl Wire for Proxy {
     async fn connect(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) {
         let id = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire);
+        println!("[stream] process id {}", id);
         let secured_stream = match tls.accept(stream).await {
             Ok(v) => v,
             // TODO: Specify the error and response error message
@@ -57,13 +58,13 @@ impl Wire for Proxy {
                 return ;
             }
         };
+        println!("[secured-stream] established");
         let line = match ConnectedLine::new(id, secured_stream, addr)
-            .handshake(Some(self.authenticator.clone())).await 
+            .handshake::<Authenticator>(None).await 
         {
             Some(v) => v,
             None => return,
         };
         line.online()
-        // line.online();
     }
 }

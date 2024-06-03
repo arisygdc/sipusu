@@ -1,4 +1,4 @@
-use std::{fs::File, io::{self, BufReader}, net::SocketAddr, path::Path, sync::Arc};
+use std::{fs::File, io::{self, BufReader}, net::SocketAddr, path::{Path, PathBuf}, sync::Arc};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, task::JoinHandle};
 use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, server::TlsStream, TlsAcceptor};
@@ -28,12 +28,12 @@ impl<H: Wire + Send + Sync + 'static> Server<H> {
                 io::ErrorKind::NotFound, "certificate"
             ))?;
 
-        let certs = cert.load_certs()?;
-        let key = cert.load_keys()?;
+            let certs = cert.load_certs()?;
+            let key = cert.load_keys()?;
 
         let tls_config = tokio_rustls::rustls::ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(certs, key)
+            .with_single_cert(certs, key)   
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
         let fut = self.bind_secure(addr, tls_config);
@@ -52,20 +52,22 @@ impl<H: Wire + Send + Sync + 'static> Server<H> {
             let (stream, peer_addr) = listener.accept().await?;
             let acceptor = acceptor.clone();
             
+            println!("[stream] incoming");
             let handle: Arc<H> = self.handler.clone();
-            
             handle.connect(stream, peer_addr, acceptor).await;
         }
     }
 }
 
 pub struct CertificatePath {
-    cert: String,
-    private_key: String
+    cert: PathBuf,
+    private_key: PathBuf
 }
 
 impl CertificatePath {
-    pub fn new(cert: String, private_key: String) -> Self {
+    pub fn new(cert: &str, private_key: &str) -> Self {
+        let cert = Path::new(&cert).to_owned(); 
+        let private_key = Path::new(&private_key).to_owned();
         CertificatePath { cert, private_key }
     }
 

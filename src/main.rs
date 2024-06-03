@@ -2,6 +2,7 @@ mod server;
 mod connection;
 mod authentication;
 mod core;
+mod protocol;
 
 use std::io;
 use connection::handler::Proxy;
@@ -32,7 +33,7 @@ async fn app() {
 
 async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> JoinHandle<io::Result<()>> {
     let handler = Proxy::new().await.unwrap();
-    let cert = CertificatePath::new(String::from("/var/test_host/cert.pem"), String::from("/var/test_host/key.pem"));
+    let cert = CertificatePath::new("/var/test_host/server_cert.pem", "/var/test_host/server_key.pem");
     let server = Server::new(handler, Some(cert));
 
     let rtask1 = server.bind(addr);

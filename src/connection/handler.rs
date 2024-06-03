@@ -1,11 +1,12 @@
 use std::{io::{self, ErrorKind}, net::SocketAddr, sync::atomic::AtomicU32, time::Duration};
 use bytes::BytesMut;
 use super::online::{ConnectedLine, Streamer};
-use tokio::{io::AsyncReadExt, net::TcpStream, time};
+use tokio::{io::AsyncReadExt, net::TcpStream, sync::mpsc, time};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use crate::server::Wire;
 
 pub type SecuredStream = TlsStream<TcpStream>;
+
 impl Streamer for SecuredStream {}
 impl Streamer for TcpStream {}
 
@@ -13,23 +14,17 @@ impl Streamer for TcpStream {}
 pub struct Proxy {
     // ticker: u32,
     // access_second: u32,
+    // send_connection: mpsc::UnboundedSender<S>,
     access_total: AtomicU32,
-    // authenticator: Arc<Authenticator>,
-    // push_connection: mpsc::Sender<ConnectedLine>
 }
 
 impl Proxy {
     pub async fn new() -> io::Result<Self> {
-        // let authenticator = Arc::new(Authenticator::new(String::from("user_store")).await?);
         let access_total = AtomicU32::default();
         Ok(Self { access_total })
     }
 
-    // async fn authenticate(auth: &impl AuthenticationStore, auth_data: &AuthData) -> bool {
-    //     auth.authenticate(auth_data).await
-    // }
-
-    async fn read_stream(stream: &mut TlsStream<TcpStream>, buffer: &mut BytesMut, timeout_sec: u8) -> io::Result<()>{
+    async fn read_stream(stream: &mut SecuredStream, buffer: &mut BytesMut, timeout_sec: u8) -> io::Result<()> {
         let timeout_duration = Duration::from_secs(timeout_sec as u64);
 
         match time::timeout(timeout_duration, stream.read(buffer)).await {
@@ -48,7 +43,6 @@ impl Proxy {
     }
 }
 
-// TODO: authentication
 impl Wire for Proxy {
     async fn connect_with_tls(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) {
         let id = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire);
@@ -61,24 +55,25 @@ impl Wire for Proxy {
                 return ;
             }
         };
-        println!("[secured-stream] established");
-        let mut line = ConnectedLine::new(id, secured_stream, addr);
-        let identity = match line.handshake().await {
-            Some(v) => v,
-            None => return,
-        };
+        println!("[stream] secured");
 
-        line.online(identity)
+        establish_connection(id, secured_stream, addr).await
     }
 
     async fn connect(&self, stream: TcpStream, addr: SocketAddr) {
         let id = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire);
-        let mut line = ConnectedLine::new(id, stream, addr);
-        let identity = match line.handshake().await {
-            Some(v) => v,
-            None => return,
-        };
-
-        line.online(identity)
+        establish_connection(id, stream, addr).await
     }
+}
+
+async fn establish_connection<S>(id: u32, stream: S, addr: SocketAddr) 
+    where S: Streamer + Send + Sync + 'static
+{
+    let mut line = ConnectedLine::new(id, stream, addr);
+    let identity = match line.handshake().await {
+        Some(v) => v,
+        None => return,
+    };
+
+    line.online(identity)
 }

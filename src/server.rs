@@ -10,15 +10,13 @@ pub const TLS_KEY: &str = "/var/test_host/key.pem";
 
 pub struct Server {
     cert: Option<CertificatePath>,
-    handler: Arc<Proxy>,
-    // c_sender: 
+    handler: Proxy,
 }
 
 impl Server
 {
     pub async fn new(cert: Option<CertificatePath>) -> Self {
         let handler = Proxy::new().await.unwrap();
-        let handler = Arc::new(handler);
         Self { cert, handler }
     }
 
@@ -29,9 +27,10 @@ impl Server
     where
         A: ToSocketAddrs + Send + Sync + 'static
     {
+        let handler = self.handler;
         let c_loader = match &self.cert {
             Some(cert) => cert, 
-            None => return Ok(tokio::spawn(self.bind_unsecure(addr)))
+            None => return Ok(tokio::spawn(Self::bind_unsecure(addr, handler)))
         };
 
         let certs = c_loader.load_certs()?;
@@ -42,15 +41,19 @@ impl Server
             .with_single_cert(certs, key)   
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
-        let join_handle = tokio::spawn(self.bind_secure(addr, tls_config));
+        let join_handle = tokio::spawn(Self::bind_secure(addr, handler, tls_config));
         Ok(join_handle)
     }
 
-    async fn bind_secure<A>(
-        self,
-        addr: A, 
-        tls_config: ServerConfig
-    ) -> io::Result<()> where A: ToSocketAddrs + Send {
+    async fn bind_secure<A, W>(
+        addr: A,
+        wire: W,
+        tls_config: ServerConfig,
+    ) -> io::Result<()> 
+        where 
+            A: ToSocketAddrs + Send,
+            W: Wire + Send
+    {
         let acceptor = TlsAcceptor::from(Arc::new(tls_config));
         let listener = TcpListener::bind(&addr).await?;
         
@@ -59,22 +62,24 @@ impl Server
             let acceptor = acceptor.clone();
             
             println!("[stream] incoming");
-            let handle = self.handler.clone();
-            handle.connect_with_tls(stream, peer_addr, acceptor).await;
+            wire.connect_with_tls(stream, peer_addr, acceptor).await;
         }
     }
 
-    async fn bind_unsecure<A>(
-        self,
+    async fn bind_unsecure<A, W>(
         addr: A,
-    ) -> io::Result<()> where A: ToSocketAddrs + Send {
+        wire: W,
+    ) -> io::Result<()> 
+        where 
+            A: ToSocketAddrs + Send,
+            W: Wire + Send
+    {
         let listener = TcpListener::bind(&addr).await?;
         loop {
             let (stream, peer_addr) = listener.accept().await?;
             
             println!("[stream] incoming");
-            let handle = self.handler.clone();
-            handle.connect(stream, peer_addr).await;
+            wire.connect(stream, peer_addr).await;
         }
     }
 }

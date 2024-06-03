@@ -33,7 +33,7 @@ async fn app() {
 async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, JoinHandle<()>) {
     let (active_connection, connection_sender) = Onlines::new();
     let handler = Proxy::new(connection_sender).await.unwrap();
-    let cert = CertificatePath::new(String::from("/var/test_host/cert.pem"), String::from("/var/test_host/key.pem"));
+    let cert = CertificatePath::default();
     let server = Server::new(handler, Some(cert));
 
     let rtask1 = server.bind(addr);

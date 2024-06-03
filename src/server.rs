@@ -3,6 +3,9 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, task::JoinHandle};
 use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, server::TlsStream, TlsAcceptor};
 
+pub const TLS_CERT: &str = "/var/test_host/cert.pem";
+pub const TLS_KEY: &str = "/var/test_host/key.pem";
+
 pub type SecuredStream = TlsStream<TcpStream>;
 
 pub struct Server<H: Handler + Send + Sync + 'static> {
@@ -67,6 +70,12 @@ impl<H: Handler + Send + Sync + 'static> Server<H> {
 pub struct CertificatePath {
     cert: String,
     private_key: String
+}
+
+impl Default for CertificatePath {
+    fn default() -> Self {
+        Self::new(TLS_CERT.to_string(), TLS_KEY.to_string())
+    }
 }
 
 impl CertificatePath {

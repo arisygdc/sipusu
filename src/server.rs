@@ -6,9 +6,6 @@ use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerCo
 pub const TLS_CERT: &str = "/var/test_host/cert.pem";
 pub const TLS_KEY: &str = "/var/test_host/key.pem";
 
-pub type SecuredStream = TlsStream<TcpStream>;
-
-
 pub struct Server<H: Wire + Send + Sync + 'static> {
     cert: Option<CertificatePath>,
     handler: Arc<H>

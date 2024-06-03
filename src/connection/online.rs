@@ -1,42 +1,50 @@
 // #![allow(unused)]
-use std::{io::{self, ErrorKind}, net::SocketAddr, sync::Arc, time::Duration};
+use std::{io::{self, ErrorKind}, net::SocketAddr, time::Duration};
 use bytes::BytesMut;
-use tokio::{io::AsyncReadExt, time};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time};
 
-use crate::{authentication::AuthenticationStore, server::SecuredStream};
+use crate::server::SecuredStream;
+
+pub trait Streamer: 
+AsyncReadExt 
++ AsyncWriteExt
++ std::marker::Unpin {}
 
 #[allow(dead_code)]
-pub struct ConnectedLine {
+pub struct ConnectedLine<S> 
+    where S: Streamer + Send + Sync + 'static
+{
     id: u32,
-    socket: SecuredStream,
+    socket: S,
     addr: SocketAddr,
 }
 
-impl ConnectedLine {
-    pub fn new(id: u32, socket: SecuredStream, addr: SocketAddr) -> Self {
+impl<S> ConnectedLine<S> 
+    where S: Streamer + Send + Sync + 'static
+{
+    pub fn new(id: u32, socket: S, addr: SocketAddr) -> Self {
         Self { id, socket, addr }
     }
 
-    pub async fn handshake<A>(mut self, auth_opt: Option<Arc<A>>) -> Option<Self>
-    where A: AuthenticationStore
-    {
-        match auth_opt {
-            None => (),
-            Some(actr) => self.authenticate(actr).await.unwrap()
-        }
-        unimplemented!()
+    pub async fn handshake(&mut self) -> Option<OnlineIdentity> {
+        let state = OnlineState::Publisher;
+        let identity = OnlineIdentity {
+            topic: "fwef".to_owned(),
+            state,
+        };
+        Some(identity)
     }
 
-    pub async fn authenticate<A>(&mut self, actr: Arc<A>) -> io::Result<()>
-        where A: AuthenticationStore
-    {
-        // self.socket.write("".as_slice()).await?;
-        // let buffer = BytesMut::with_capacity(capacity)
-        // actr.authenticate(auth);
-        Ok(())
-    }
+    // pub async fn authenticate<A>(&mut self, actr: Arc<A>) -> io::Result<()>
+    //     where A: AuthenticationStore
+    // {
+    //     // self.socket.write("".as_slice()).await?;
+    //     // let buffer = BytesMut::with_capacity(capacity)
+    //     // actr.authenticate(auth);
+    //     Ok(())
+    // }
 
-    pub fn online(mut self) {
+    pub fn online(mut self, identity: OnlineIdentity) {
         let fut = async move {
             loop {
                 let mut buf = BytesMut::with_capacity(256);
@@ -76,4 +84,14 @@ async fn read_timeout(stream: &mut SecuredStream, buffer: &mut BytesMut, timeout
             return Err(io::Error::new(ErrorKind::TimedOut, "Reading stream timeout"));
         }
     }
+}
+
+pub struct OnlineIdentity {
+    topic: String,
+    state: OnlineState
+}
+
+enum OnlineState {
+    Publisher,
+    Subscriber
 }

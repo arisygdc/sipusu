@@ -13,8 +13,7 @@ pub struct Server {
     handler: Proxy,
 }
 
-impl Server
-{
+impl Server {
     pub async fn new(cert: Option<CertificatePath>) -> Self {
         let handler = Proxy::new().await.unwrap();
         Self { cert, handler }

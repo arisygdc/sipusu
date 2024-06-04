@@ -1,9 +1,9 @@
 use std::{io::{self, ErrorKind}, net::SocketAddr, sync::atomic::AtomicU32, time::Duration};
 use bytes::BytesMut;
-use super::online::{ConnectedLine, Streamer};
+use super::line::{ConnectedLine, Streamer};
 use tokio::{io::AsyncReadExt, net::TcpStream, sync::mpsc, time};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
-use crate::server::Wire;
+use crate::{core::Online, server::Wire};
 
 pub type SecuredStream = TlsStream<TcpStream>;
 
@@ -14,7 +14,7 @@ impl Streamer for TcpStream {}
 pub struct Proxy {
     // ticker: u32,
     // access_second: u32,
-    // send_connection: mpsc::UnboundedSender<S>,
+    // send_connection: mpsc::Sender<S>,
     access_total: AtomicU32,
 }
 
@@ -57,23 +57,19 @@ impl Wire for Proxy {
         };
         println!("[stream] secured");
 
-        establish_connection(id, secured_stream, addr).await
+        let online = establish_connection(id, secured_stream, addr).await;
     }
 
     async fn connect(&self, stream: TcpStream, addr: SocketAddr) {
         let id = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire);
-        establish_connection(id, stream, addr).await
+        let online = establish_connection(id, stream, addr).await;
     }
 }
 
-async fn establish_connection<S>(id: u32, stream: S, addr: SocketAddr) 
+async fn establish_connection<S>(id: u32, stream: S, addr: SocketAddr) -> Option<Online<S>>
     where S: Streamer + Send + Sync + 'static
 {
     let mut line = ConnectedLine::new(id, stream, addr);
-    let identity = match line.handshake().await {
-        Some(v) => v,
-        None => return,
-    };
-
-    line.online(identity)
+    let (topic, state) = line.handshake().await?;
+    Some(Online::new(line, topic, state))
 }

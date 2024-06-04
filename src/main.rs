@@ -41,7 +41,7 @@ async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> JoinHandle<io
     // but any stream that impl Streamer can send through this channel
     let mediator = TopicMediator::<SecuredStream>::new();
     let event = EventHandler {};
-    event.read_signal(mediator.1).await;
+    event.listen(mediator.1).await;
 
     let handler = Proxy::new(mediator.0).await.unwrap();
     let server = Server::new(None, handler).await;

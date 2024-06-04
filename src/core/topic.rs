@@ -1,22 +1,20 @@
-use std::cell::RefCell;
+use tokio::sync::RwLock;
 
-use crate::connection::line::Streamer;
-
-use super::{pubisher::Publisher, Online};
+use super::{pubisher::Publisher, LineSettle, Streamer};
 
 pub struct Topic<S> 
     where S: Streamer + Send + Sync + 'static
 {
     pub(super) literal_name: String,
     pub(super) hash_name: u64,
-    publishers: RefCell<Publisher<S>>
+    publishers: RwLock<Publisher<S>>
 }
 
 impl<S> Topic<S> 
     where S: Streamer + Send + Sync + 'static
 {
-    pub fn add_publisher(&self, online: Online<S>) {
-        let mut publish = self.publishers.borrow_mut();
+    pub async fn add_publisher(&self, online: LineSettle<S>) {
+        let mut publish = self.publishers.write().await;
         publish.push(online);
     }
 }

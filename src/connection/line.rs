@@ -1,28 +1,25 @@
 // #![allow(unused)]
 use std::{io::{self, ErrorKind}, net::SocketAddr, time::Duration};
 use bytes::BytesMut;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time};
+use tokio::{io::AsyncReadExt, net::TcpStream, time};
 use crate::core::OnlineState;
 use super::handler::SecuredStream;
 
-pub trait Streamer: 
-AsyncReadExt 
-+ AsyncWriteExt
-+ std::marker::Unpin {}
+pub enum Socket {
+    Secure(SecuredStream),
+    Default(TcpStream)
+}
 
 #[allow(dead_code)]
-pub struct ConnectedLine<S> 
-    where S: Streamer
+pub struct ConnectedLine
 {
     id: u32,
-    socket: S,
+    socket: Socket,
     addr: SocketAddr,
 }
 
-impl<S> ConnectedLine<S> 
-    where S: Streamer + Send + Sync + 'static
-{
-    pub fn new(id: u32, socket: S, addr: SocketAddr) -> Self {
+impl ConnectedLine {
+    pub fn new(id: u32, socket: Socket, addr: SocketAddr) -> Self {
         Self { id, socket, addr }
     }
 
@@ -72,27 +69,3 @@ async fn read_timeout(stream: &mut SecuredStream, buffer: &mut BytesMut, timeout
         }
     }
 }
-
-// pub struct OnlineIdentity {
-//     topic: String,
-//     state: OnlineState
-// }
-
-// pub enum OnlineState {
-//     Publisher,
-//     Subscriber
-// }
-
-// pub struct Online<S> 
-//     where S: Streamer + Send + Sync + 'static 
-// {
-//     line: ConnectedLine<S>,
-//     id: OnlineIdentity
-// }
-
-// impl<S: Streamer + Send + Sync + 'static > Online<S> {
-//     #[inline]
-//     pub fn topic_eq(&self, other: &str) -> bool {
-//         self.id.topic.eq(other)
-//     }
-// }

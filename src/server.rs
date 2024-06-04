@@ -14,8 +14,7 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn new(cert: Option<CertificatePath>) -> Self {
-        let handler = Proxy::new().await.unwrap();
+    pub async fn new(cert: Option<CertificatePath>, handler: Proxy) -> Self {
         Self { cert, handler }
     }
 
@@ -63,7 +62,7 @@ impl Server {
             println!("[stream] incoming");
             wire.connect_with_tls(stream, peer_addr, acceptor).await;
         }
-    }
+    }   
 
     async fn bind_unsecure<A, W>(
         addr: A,
@@ -73,6 +72,7 @@ impl Server {
             A: ToSocketAddrs + Send,
             W: Wire + Send
     {
+        println!("[tcp] unsecure");
         let listener = TcpListener::bind(&addr).await?;
         loop {
             let (stream, peer_addr) = listener.accept().await?;

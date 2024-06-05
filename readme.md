@@ -27,6 +27,8 @@ SIPUSU aims to implement a custom secure protocol using TLS to encrypt and authe
 
 - [ ] Implement Write-Ahead Logging for message durability
 - [x] Develop a custom secure protocol using TLS for encrypted communication
+- [ ] multi publisher and multi subscriber on one topic
+- [ ] Optimize send message
 - [ ] Optimize disk I/O handling for high performance
 
 ## Contributing

@@ -1,55 +1,86 @@
 // #![allow(unused)]
 use std::{io::{self, ErrorKind}, net::SocketAddr, time::Duration};
 use bytes::BytesMut;
-use tokio::{io::AsyncReadExt, net::TcpStream, time};
-use crate::core::OnlineState;
+use tokio::{io::AsyncReadExt, time};
+use crate::{message_broker::Streamer, protocol::mqtt::ConnectPacket};
 use super::handler::SecuredStream;
 
-pub enum Socket {
-    Secure(SecuredStream),
-    Default(TcpStream)
-}
-
-#[allow(dead_code)]
-pub struct ConnectedLine
+// public just for now
+// #[allow(dead_code)]
+pub struct ConnectedLine<S>
+    where S: Streamer + Send + Sync + 'static
 {
-    id: u32,
-    socket: Socket,
-    addr: SocketAddr,
+    pub conn_num: u32,
+    pub socket: S,
+    pub addr: SocketAddr,
 }
 
-impl ConnectedLine {
-    pub fn new(id: u32, socket: Socket, addr: SocketAddr) -> Self {
-        Self { id, socket, addr }
+impl<S> ConnectedLine<S>
+    where S: Streamer + Send + Sync + 'static 
+{
+    pub fn new(conn_num: u32, socket: S, addr: SocketAddr) -> Self {
+        Self { conn_num, socket, addr }
     }
 
-    pub async fn handshake(&mut self) -> Option<(String, OnlineState)> {
-        let state = OnlineState::Publisher;
-        Some(("topic".to_owned(), state))
+    pub async fn read_timeout(&mut self, buffer: &mut BytesMut, timeout_sec: u8) -> io::Result<()> {
+        let timeout_duration = Duration::from_secs(timeout_sec as u64);
+    
+        match time::timeout(timeout_duration, self.read(buffer)).await {
+            Ok(read_result) => {
+                let read_leng = read_result?;
+                if read_leng == 0 {
+                    println!("Client closed connection");
+                    return Err(io::Error::new(ErrorKind::ConnectionAborted, "Client closed connection"));
+                }
+                return Ok(());
+            }
+            Err(_) => {
+                return Err(io::Error::new(ErrorKind::TimedOut, "Reading stream timeout"));
+            }
+        }
     }
 
-    // pub fn online(mut self, topic: String, state: OnlineState) {
-    //     let fut = async move {
-    //         loop {
-    //             let mut buf = BytesMut::with_capacity(256);
-    //             match self.socket.read(&mut buf).await {
-    //                 Ok(0) => {
-    //                     // Connection was closed
-    //                     return ();
-    //                 }
-    //                 Ok(n) => {
-    //                     // Handle received data
-    //                     println!("Received: {:?}", &buf[..n]);
-    //                 }
-    //                 Err(e) => {
-    //                     eprintln!("[listen] Error: {}", e);
-    //                     return ();
-    //                 }
-    //             }
-    //         }
-    //     };
-    //     tokio::task::spawn(fut);
-    // }
+    #[inline(always)]
+    pub async fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.socket.read(buffer).await
+    }
+
+    #[inline(always)]
+    pub async fn write(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.socket.write(buffer).await
+    }
+}
+
+pub trait MQTTHandshake {
+    fn read_ack(&mut self) -> impl std::future::Future<Output = io::Result<ConnectPacket>> + Send;
+    fn connack(&mut self, flag: SessionFlag, code: u8) -> impl std::future::Future<Output = io::Result<()>> + Send;
+}
+
+impl<S> MQTTHandshake for ConnectedLine<S> 
+    where S: Streamer + Send + Sync + 'static 
+{
+    async fn read_ack(&mut self) -> io::Result<ConnectPacket> {
+        let mut buffer = BytesMut::with_capacity(30);
+        self.read_timeout(&mut buffer, 1).await?;
+        let packet = ConnectPacket::deserialize(&mut buffer)
+            .map_err(|e| io::Error::new(
+                ErrorKind::InvalidData, 
+                e.to_string()
+            )
+        )?;
+        Ok(packet)
+    }
+
+    async fn connack(&mut self, flag: SessionFlag, code: u8) -> io::Result<()> {
+        let session = match flag {
+            SessionFlag::New => 0x0u8,
+            SessionFlag::Preset => 0x1u8
+        };
+
+        let connack = [0x20u8, 0x02u8, session, code];
+        self.socket.write(&connack).await?;
+        Ok(())
+    }
 }
 
 async fn read_timeout(stream: &mut SecuredStream, buffer: &mut BytesMut, timeout_sec: u8) -> io::Result<()>{
@@ -68,4 +99,11 @@ async fn read_timeout(stream: &mut SecuredStream, buffer: &mut BytesMut, timeout
             return Err(io::Error::new(ErrorKind::TimedOut, "Reading stream timeout"));
         }
     }
+}
+
+pub enum SessionFlag {
+    // Resume session
+    Preset, 
+    // Create new session
+    New
 }

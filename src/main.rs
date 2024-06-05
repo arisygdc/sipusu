@@ -1,10 +1,10 @@
 mod server;
 mod connection;
 mod authentication;
-mod core;
+mod message_broker;
 mod protocol;
 
-use core::{EventHandler, TopicMediator};
+use message_broker::{BrokerMediator};
 use std::io;
 use connection::handler::{Proxy, SecuredStream};
 use server::Server;
@@ -36,13 +36,8 @@ async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> JoinHandle<io
     // let cert = CertificatePath::default();
     println!("running mediator");
 
-    // why it workss?????
-    // type annotation needed make me confuse
-    // but any stream that impl Streamer can send through this channel
-    let mediator = TopicMediator::<SecuredStream>::new();
-    let event = EventHandler {};
-    event.listen(mediator.1).await;
-
+    let mediator = BrokerMediator::<SecuredStream>::new();
+    
     let handler = Proxy::new(mediator.0).await.unwrap();
     let server = Server::new(None, handler).await;
 

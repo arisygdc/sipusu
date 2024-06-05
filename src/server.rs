@@ -3,18 +3,22 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, task::JoinHandle};
 use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, TlsAcceptor};
 
-use crate::connection::handler::Proxy;
+use crate::{connection::handler::Proxy, message_broker::KnownClient};
 
 pub const TLS_CERT: &str = "/var/test_host/cert.pem";
 pub const TLS_KEY: &str = "/var/test_host/key.pem";
 
-pub struct Server {
+pub struct Server<C> 
+    where C: KnownClient + Send + Sync + 'static
+{
     cert: Option<CertificatePath>,
-    handler: Proxy,
+    handler: Proxy<C>,
 }
 
-impl Server {
-    pub async fn new(cert: Option<CertificatePath>, handler: Proxy) -> Self {
+impl<C> Server<C> 
+    where C: KnownClient + Send + Sync + 'static
+{
+    pub async fn new(cert: Option<CertificatePath>, handler: Proxy<C>) -> Self {
         Self { cert, handler }
     }
 

@@ -1,13 +1,12 @@
 use bytes::{Buf, BufMut, BytesMut};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+// #[derive(Debug, Serialize, Deserialize)]
 pub enum MqttPacket {
     Connect(ConnectPacket),
     Publish(PublishPacket),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct ConnectPacket {
     pub protocol_name: String,
     pub protocol_level: u8,
@@ -15,7 +14,7 @@ pub struct ConnectPacket {
     pub keep_alive: u16,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+// #[derive(Debug, Serialize, Deserialize)]
 pub struct PublishPacket {
     pub topic: String,
     pub payload: Vec<u8>,
@@ -85,7 +84,7 @@ impl ConnectPacket {
         bytes.advance(1);
 
         // Remaining length
-        let remaining_length = bytes.get_u8() as usize;
+        let _remaining_length = bytes.get_u8() as usize;
 
         // Protocol name
         let protocol_name_len = bytes.get_u16() as usize;

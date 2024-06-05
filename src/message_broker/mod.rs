@@ -1,31 +1,41 @@
 #![allow(dead_code)]
-use std::{mem, sync::Arc};
+use std::{mem, net::SocketAddr, sync::Arc};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::RwLock};
-use crate::{connection::{handler::SecuredStream, line::ConnectedLine}, protocol::mqtt::ConnectPacket};
+use crate::{connection::handler::SecuredStream, protocol::mqtt::ConnectPacket};
 
 pub trait Streamer: 
 AsyncReadExt
 + AsyncWriteExt
 + std::marker::Unpin {}
 
+pub enum Socket {
+    Secure(SecuredStream), 
+    Plain(TcpStream)
+}
 
-pub struct Client<S>
-    where S: Streamer + Send + Sync + 'static
-{
-    line: ConnectedLine<S>,
+
+pub struct Client {
+    conn_num: u32,
+    socket: Socket,
+    addr: SocketAddr,
     protocol_name: String,
     protocol_level: u8,
     client_id: String,
     keep_alive: u16,
 }
 
-impl<S> Client<S> 
-    where S: Streamer + Send + Sync + 'static
-{
-    pub fn new(line: ConnectedLine<S>, conn_pkt: ConnectPacket) -> Self {
+impl Client {
+    pub fn new(
+        conn_num: u32,
+        socket: Socket,
+        addr: SocketAddr, 
+        conn_pkt: ConnectPacket
+    ) -> Self {
         let mut pkt = conn_pkt;
         Self {
-            line,
+            conn_num,
+            addr,
+            socket,
             client_id: mem::take(&mut pkt.client_id),
             keep_alive: pkt.keep_alive,
             protocol_level: pkt.protocol_level,
@@ -34,50 +44,23 @@ impl<S> Client<S>
     }
 }
 
-type Clients<S: Streamer + Send + Sync + 'static> = Vec<Client<S>>;
+type Clients = Vec<Client>;
 
-pub struct BrokerMediator<S>
-    where S: Streamer + Send + Sync + 'static
-{
-    clients: Arc<RwLock<Clients<S>>>,
+pub struct BrokerMediator {
+    clients: Arc<RwLock<Clients>>,
 }
 
-impl<S> BrokerMediator<S> 
-    where S: Streamer + Send + Sync + 'static
-{
+impl BrokerMediator {
     pub fn new() -> Self {
         let clients = Arc::new(RwLock::new(Vec::new()));
         Self{ clients }
     }
 }
 
-impl<ST> BrokerMediator<ST> 
-    where ST: Streamer + Send + Sync + 'static
-{
-    pub async fn register(&self, client: Client<ST>)
+impl BrokerMediator {
+    pub async fn register(&self, client: Client)
     {
         let mut wr = self.clients.write().await;
         wr.push(client)
     }
 }
-
-// impl<S> KnownClient for BrokerMediator<S> 
-//     where S: Streamer + Send + Sync + 'static
-// {
-//     async fn forward(&self, client: Online) {
-//         let socket: LineSettle<_> = match client.line.socket {
-//             crate::connection::line::Socket::Default(s) => LineSettle::new(client.line.id, s, client.line.addr),
-//             crate::connection::line::Socket::Secure(s) => LineSettle::new(client.line.id, s, client.line.addr),
-//         };
-
-//         let line = LineSettle {id: client.line.id, socket, client.line.addr};
-//         match client.state {
-//             OnlineState::Publisher => {
-//                 let topic = Topic::new(client.topic);
-//                 let new_publisher = Publisher::new(topic, line);
-//                 let write_publisher = self.publishers.write().await;
-//                 write_publisher.insert(client)
-//             }, OnlineState::Subscriber => ()
-//         }
-//     }
-// }

@@ -4,9 +4,9 @@ mod authentication;
 mod message_broker;
 mod protocol;
 
-use message_broker::{BrokerMediator};
+use message_broker::BrokerMediator;
 use std::io;
-use connection::handler::{Proxy, SecuredStream};
+use connection::handler::Proxy;
 use server::Server;
 use tokio::{join, net::ToSocketAddrs, runtime, task::JoinHandle};
 
@@ -36,9 +36,9 @@ async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> JoinHandle<io
     // let cert = CertificatePath::default();
     println!("running mediator");
 
-    let mediator = BrokerMediator::<SecuredStream>::new();
+    let mediator: BrokerMediator = BrokerMediator::new();
     
-    let handler = Proxy::new(mediator.0).await.unwrap();
+    let handler = Proxy::new(mediator).await.unwrap();
     let server = Server::new(None, handler).await;
 
     let rtask1 = server.bind(addr);

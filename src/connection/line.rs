@@ -103,7 +103,7 @@ async fn read_timeout(stream: &mut SecuredStream, buffer: &mut BytesMut, timeout
 
 pub enum SessionFlag {
     // Resume session
-    Preset, 
+    Preset,
     // Create new session
     New
 }

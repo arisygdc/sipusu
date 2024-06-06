@@ -55,13 +55,11 @@ impl<T> List<T> {
         use std::mem;
         let mut v = vec![];
         let mut curr = self.head.load(Ordering::SeqCst);
-        while !(*curr).next.load(Ordering::SeqCst).is_null() {
+        while !curr.is_null() {
             let cv = mem::transmute_copy::<T, T>(&(*curr).val);
             v.push(cv);
             curr = (*curr).next.load(Ordering::SeqCst);
         }
-        let cv = mem::transmute_copy::<T, T>(&(*curr).val);
-        v.push(cv);
         v
     }
 }
@@ -86,12 +84,12 @@ unsafe fn iter_exchange<T>(curptr: *mut AtmcNode<T>, excd: *mut AtmcNode<T>) -> 
 mod tests {
     use std::sync::Arc;
 
-    use tokio::join;
+    use tokio::{join, task::yield_now};
 
     use super::List;
 
     #[tokio::test]
-    async fn just_append() {
+    async fn concurrent_insert() {
         let list: Arc<List<u8>> = Arc::new(List::new());
         
         let ll2 = list.clone();
@@ -121,6 +119,41 @@ mod tests {
             println!("{:?}", ppp);
             assert!(ppp.len() == 18)
         }
+    }
+
+    #[tokio::test]
+    async fn ctxswitch_insert() {
+        let list: Arc<List<u8>> = Arc::new(List::new());
         
+        let ll2 = list.clone();
+        let t1 = tokio::spawn(async move {
+            for i in 0..6 {
+                ll2.append(i);
+                yield_now().await
+            }
+        });
+
+        let ll2 = list.clone();
+        let t2 = tokio::spawn(async move {
+            for i in 0..6 {
+                ll2.append(i);
+                yield_now().await
+            }
+        });
+
+        let ll2 = list.clone();
+        let t3 = tokio::spawn(async move {
+            for i in 0..6 {
+                ll2.append(i);
+                yield_now().await
+            }
+        });
+
+        let _ = join!(t1, t2, t3);
+        unsafe {
+            let ppp = list.collects();
+            println!("{:?}", ppp);
+            assert!(ppp.len() == 18)
+        }
     }
 }

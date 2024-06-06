@@ -4,7 +4,7 @@ mod authentication;
 mod message_broker;
 mod protocol;
 
-use message_broker::BrokerMediator;
+use message_broker::mediator::BrokerMediator;
 use std::io;
 use connection::handler::Proxy;
 use server::Server;

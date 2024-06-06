@@ -14,7 +14,7 @@ pub struct ConnectPacket {
     pub keep_alive: u16,
 }
 
-// #[derive(Debug, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct PublishPacket {
     pub topic: String,
     pub payload: Vec<u8>,

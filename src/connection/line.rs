@@ -1,18 +1,22 @@
 // #![allow(unused)]
 use std::{io::{self, ErrorKind}, net::SocketAddr, time::Duration};
 use bytes::BytesMut;
-use tokio::{io::AsyncReadExt, time};
-use crate::{message_broker::Streamer, protocol::mqtt::ConnectPacket};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time};
+use crate::protocol::mqtt::ConnectPacket;
 use super::handler::SecuredStream;
 
-// public just for now
-// #[allow(dead_code)]
+pub trait Streamer: 
+AsyncReadExt
++ AsyncWriteExt
++ std::marker::Unpin {}
+
+
 pub struct ConnectedLine<S>
     where S: Streamer + Send + Sync + 'static
 {
-    pub conn_num: u32,
-    pub socket: S,
-    pub addr: SocketAddr,
+    pub(super) conn_num: u32,
+    pub(super) socket: S,
+    pub(super) addr: SocketAddr,
 }
 
 impl<S> ConnectedLine<S>

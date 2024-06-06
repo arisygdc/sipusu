@@ -1,8 +1,8 @@
 use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
-use super::line::ConnectedLine;
+use super::line::{ConnectedLine, Streamer};
 use tokio::net::TcpStream;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
-use crate::{connection::line::{MQTTHandshake, SessionFlag}, message_broker::{BrokerMediator, Client, Socket, Streamer}, protocol::mqtt::ConnectPacket, server::Wire};
+use crate::{connection::line::{MQTTHandshake, SessionFlag}, message_broker::{client::{Client, Socket}, mediator::BrokerMediator}, protocol::mqtt::ConnectPacket, server::Wire};
 
 pub type SecuredStream = TlsStream<TcpStream>;
 impl Streamer for SecuredStream {}

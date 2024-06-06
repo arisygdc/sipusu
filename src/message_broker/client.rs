@@ -2,19 +2,21 @@ use std::{mem, net::SocketAddr};
 use tokio::net::TcpStream;
 use crate::{connection::handler::SecuredStream, protocol::mqtt::ConnectPacket};
 
+#[derive(Debug)]
 pub enum Socket {
     Secure(SecuredStream), 
     Plain(TcpStream)
 }
 
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct Client {
-    conn_num: u32,
+    pub(super) conn_num: u32,
     socket: Socket,
-    addr: SocketAddr,
+    pub(super) addr: SocketAddr,
     protocol_name: String,
     protocol_level: u8,
-    client_id: String,
+    pub(super) client_id: String,
     keep_alive: u16,
 }
 

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 use crate::protocol::mqtt::PublishPacket;
 use super::{client::Client, linked_list::List};
@@ -20,8 +20,24 @@ impl BrokerMediator {
 
 impl BrokerMediator {
     pub async fn register(&self, client: Client) {
+        println!("{:?}", self.clients);
         let mut wr = self.clients.write().await;
         wr.push(client)
+    }
+
+    pub async fn check_session(&self, clid: &str, addr: &SocketAddr) -> Option<u32> {
+        let read = self.clients.read().await;
+        for c in read.iter() {
+            if !c.client_id.eq(clid) {
+                continue;
+            }
+
+            if c.addr.eq(addr) {
+                return Some(c.conn_num);
+            }
+        }
+        
+        None
     }
 }
 

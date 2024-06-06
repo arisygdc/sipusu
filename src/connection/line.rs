@@ -1,9 +1,8 @@
 // #![allow(unused)]
-use std::{io::{self, ErrorKind}, net::SocketAddr, time::Duration};
+use std::{io::{self, ErrorKind}, time::Duration};
 use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time};
 use crate::protocol::mqtt::ConnectPacket;
-use super::handler::SecuredStream;
 
 pub trait Streamer: 
 AsyncReadExt
@@ -16,14 +15,13 @@ pub struct ConnectedLine<S>
 {
     pub(super) conn_num: u32,
     pub(super) socket: S,
-    pub(super) addr: SocketAddr,
 }
 
 impl<S> ConnectedLine<S>
     where S: Streamer + Send + Sync + 'static 
 {
-    pub fn new(conn_num: u32, socket: S, addr: SocketAddr) -> Self {
-        Self { conn_num, socket, addr }
+    pub fn new(conn_num: u32, socket: S) -> Self {
+        Self { conn_num, socket }
     }
 
     pub async fn read_timeout(&mut self, buffer: &mut BytesMut, timeout_sec: u8) -> io::Result<()> {
@@ -81,27 +79,9 @@ impl<S> MQTTHandshake for ConnectedLine<S>
             SessionFlag::Preset => 0x1u8
         };
 
-        let connack = [0x20u8, 0x02u8, session, code];
-        self.socket.write(&connack).await?;
+        let mut connack = [0x20u8, 0x02u8, session, code];
+        self.write(connack.as_mut_slice()).await?;
         Ok(())
-    }
-}
-
-async fn read_timeout(stream: &mut SecuredStream, buffer: &mut BytesMut, timeout_sec: u8) -> io::Result<()>{
-    let timeout_duration = Duration::from_secs(timeout_sec as u64);
-
-    match time::timeout(timeout_duration, stream.read(buffer)).await {
-        Ok(read_result) => {
-            let read_leng = read_result?;
-            if read_leng == 0 {
-                println!("Client closed connection");
-                return Err(io::Error::new(ErrorKind::ConnectionAborted, "Client closed connection"));
-            }
-            return Ok(());
-        }
-        Err(_) => {
-            return Err(io::Error::new(ErrorKind::TimedOut, "Reading stream timeout"));
-        }
     }
 }
 

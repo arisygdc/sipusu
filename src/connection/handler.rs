@@ -16,21 +16,22 @@ pub struct Proxy {
 
 impl Proxy {
     pub async fn new(broker: BrokerMediator) -> io::Result<Self> {
-        let access_total = AtomicU32::default();
+        let access_total = AtomicU32::new(1);
         Ok(Self { access_total, broker })
     }
 
-    async fn establish_connection(&self, id: u32, ack: &mut impl MQTTHandshake) -> io::Result<ConnectPacket> {
-        // let mut line = ConnectedLine::new(id, stream, addr);
-
-        // FIXME: calling unwrap
+    async fn establish_connection(&self, ack: &mut impl MQTTHandshake, addr: &SocketAddr) -> io::Result<ConnectPacket> {
         // TODO: validate ack
-        let req_ack = ack.read_ack().await.unwrap();
-        println!("[{}] {:?}", id, req_ack);
-        ack.connack(SessionFlag::New, 0).await.unwrap();
+        let req_ack = ack.read_ack().await?;
+
+        println!("{:?}", req_ack);
+        let session = match self.broker.check_session(&req_ack.client_id, addr).await {
+            Some(_) => SessionFlag::Preset,
+            None => SessionFlag::New
+        };
         
-        // let client = Client::new(ack, req_ack);
-        // self.broker.register(client).await;
+        ack.connack(session, 0).await.unwrap();
+        
         Ok(req_ack)
     }
 }
@@ -51,18 +52,29 @@ impl Wire for Proxy
         };
         
         println!("[stream] secured");
-        let mut line = ConnectedLine::new(id, secured_stream, addr);
-        let req_ackk = self.establish_connection(id, &mut line).await.unwrap();
-        let client = Client::new(line.conn_num, Socket::Secure(line.socket), line.addr, req_ackk);
+        let mut line = ConnectedLine::new(id, secured_stream);
+        let req_ackk = match self.establish_connection(&mut line, &addr).await {
+            Ok(o) => o,
+            Err(e) => {
+                // TODO: unfinished
+                if let io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput = e.kind() {
+                    let mut err_response = [b'n', b'o'];
+                    let _ = line.write(&mut err_response).await;
+                }
+                return ;
+
+            }
+        };
+        let client = Client::new(line.conn_num, Socket::Secure(line.socket), addr, req_ackk);
 
         self.broker.register(client).await;
     }
 
     async fn connect(&self, stream: TcpStream, addr: SocketAddr) {
         let id = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire);
-        let mut line = ConnectedLine::new(id, stream, addr);
-        let req_ackk = self.establish_connection(id, &mut line).await.unwrap();
-        let client = Client::new(line.conn_num, Socket::Plain(line.socket), line.addr, req_ackk);
+        let mut line = ConnectedLine::new(id, stream);
+        let req_ackk = self.establish_connection(&mut line, &addr).await.unwrap();
+        let client = Client::new(line.conn_num, Socket::Plain(line.socket), addr, req_ackk);
         self.broker.register(client).await;
     }
 }

@@ -53,14 +53,14 @@ impl<T> List<T> {
     #[cfg(test)]
     unsafe fn collects(&self) -> Vec<T> {
         use std::mem;
-        let mut v = vec![];
+        let mut collect = vec![];
         let mut curr = self.head.load(Ordering::SeqCst);
         while !curr.is_null() {
             let cv = mem::transmute_copy::<T, T>(&(*curr).val);
-            v.push(cv);
+            collect.push(cv);
             curr = (*curr).next.load(Ordering::SeqCst);
         }
-        v
+        collect
     }
 }
 

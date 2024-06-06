@@ -1,4 +1,5 @@
-#![allow(dead_code)]
+mod linked_list;
+
 use std::{mem, net::SocketAddr, sync::Arc};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::RwLock};
 use crate::{connection::handler::SecuredStream, protocol::mqtt::ConnectPacket};

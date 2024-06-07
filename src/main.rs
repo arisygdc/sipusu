@@ -25,19 +25,19 @@ fn main() {
 
 async fn app() {
     let addr = "127.0.0.1:3306".to_owned();
-    let joinhandle = bind(addr.clone()).await;
-
+    let (svr, broker) = bind(addr.clone()).await;
+    // broker.abort();
     println!("[server] running on {}", addr);
 
-    let _ = join!(joinhandle);
+    let _ = join!(svr, broker);
 }
 
-async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> JoinHandle<io::Result<()>> {
+async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, JoinHandle<()>) {
     // let cert = CertificatePath::default();
     println!("running mediator");
 
     let mediator: BrokerMediator = BrokerMediator::new();
-    
+    let broker_task = mediator.run();
     let handler = Proxy::new(mediator).await.unwrap();
     let server = Server::new(None, handler).await;
 
@@ -46,5 +46,5 @@ async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> JoinHandle<io
         Ok(v) => v,
         Err(e) => panic!("{}", e.to_string())
     };
-    task1
+    (task1, broker_task)
 }

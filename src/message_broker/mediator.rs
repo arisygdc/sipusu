@@ -1,9 +1,10 @@
-use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::RwLock;
+use std::{future::poll_fn, net::SocketAddr, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
+use bytes::BytesMut;
+use tokio::{sync::RwLock, task::{yield_now, JoinHandle}, time};
 use crate::protocol::mqtt::PublishPacket;
 use super::{client::Client, linked_list::List};
 
-type Clients = Vec<Client>;
+type Clients = Vec<AtomicPtr<Client>>;
 
 pub struct BrokerMediator {
     clients: Arc<RwLock<Clients>>,
@@ -20,24 +21,62 @@ impl BrokerMediator {
 
 impl BrokerMediator {
     pub async fn register(&self, client: Client) {
+        let mut client = client;
         println!("{:?}", self.clients);
+        let value = AtomicPtr::new(&mut client);
         let mut wr = self.clients.write().await;
-        wr.push(client)
+        wr.push(value)
     }
 
     pub async fn check_session(&self, clid: &str, addr: &SocketAddr) -> Option<u32> {
         let read = self.clients.read().await;
         for c in read.iter() {
-            if !c.client_id.eq(clid) {
-                continue;
-            }
-
-            if c.addr.eq(addr) {
-                return Some(c.conn_num);
+            let c = c.load(Ordering::Relaxed);
+            unsafe {
+                if !(*c).client_id.eq(clid) {
+                    continue;
+                }
+    
+                if (*c).addr.eq(addr) {
+                    return Some((*c).conn_num);
+                }
             }
         }
         
         None
+    }
+
+    pub fn run(&self) -> JoinHandle<()> {
+        let clients = self.clients.clone();
+        
+        let future = async move {
+            let clients = clients;
+            loop { unsafe{ listen_many(clients.clone()).await } }
+        };
+        tokio::spawn(future)
+    }
+}
+
+// FIXME: process leak, one of cpu cores 100%
+async unsafe fn listen_many(clients: Arc<RwLock<Clients>>) {
+    let listen = clients.read().await;
+    while listen.len() > 0 {
+        yield_now().await;
+        time::sleep(Duration::from_millis(10)).await;
+    }
+
+    for c in listen.iter() {
+        let mut buffer = BytesMut::new();
+        let cval = c.load(Ordering::Relaxed);
+        match (*cval).listen(&mut buffer).await {
+            Ok(0) => {
+                let cval = c.load(Ordering::Acquire);
+                (*cval).set_alive(false);
+            }, Ok(_) => {
+                let packet = PublishPacket::deserialize(&mut buffer).unwrap();
+                println!("topic: {}, payload {}", packet.topic, String::from_utf8(packet.payload).unwrap())
+            }, Err(err) => { println!("err: {}", err.to_string()) }
+        };
     }
 }
 

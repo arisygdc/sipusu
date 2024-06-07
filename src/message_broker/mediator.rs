@@ -1,4 +1,4 @@
-use std::{future::poll_fn, net::SocketAddr, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
+use std::{net::SocketAddr, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use bytes::BytesMut;
 use tokio::{sync::RwLock, task::{yield_now, JoinHandle}, time};
 use crate::protocol::mqtt::PublishPacket;
@@ -47,43 +47,15 @@ impl BrokerMediator {
     }
 
     pub fn run(&self) -> JoinHandle<()> {
-        let clients = self.clients.clone();
-        
+        let producer = Producer {
+            clients: self.clients.clone(),
+            message_queue: self.message_queue.clone()
+        };
+
         let future = async move {
-            let clients = clients;
-            loop { unsafe{ listen_many(clients.clone()).await } }
+            loop { unsafe{ producer.listen_many().await } }
         };
         tokio::spawn(future)
-    }
-}
-
-// FIXME: process leak, one of cpu cores 100%
-async unsafe fn listen_many(clients: Arc<RwLock<Clients>>) {
-    let listen = clients.read().await;
-    while listen.len() > 0 {
-        yield_now().await;
-        time::sleep(Duration::from_millis(10)).await;
-    }
-
-    for c in listen.iter() {
-        let mut buffer = BytesMut::new();
-        let cval = c.load(Ordering::Relaxed);
-        match (*cval).listen(&mut buffer).await {
-            Ok(0) => {
-                let cval = c.load(Ordering::Acquire);
-                (*cval).set_alive(false);
-            }, Ok(_) => {
-                let packet = PublishPacket::deserialize(&mut buffer).unwrap();
-                println!("topic: {}, payload {}", packet.topic, String::from_utf8(packet.payload).unwrap())
-            }, Err(err) => { println!("err: {}", err.to_string()) }
-        };
-    }
-}
-
-impl MessageProducer for BrokerMediator {
-    type T = PublishPacket;
-    fn send(&self, val: Self::T) {
-        self.message_queue.append(val)
     }
 }
 
@@ -91,6 +63,42 @@ impl MessageConsumer for BrokerMediator {
     type T = Option<PublishPacket>;
     fn get(&self) -> Self::T {
         self.message_queue.take_first()
+    }
+}
+
+struct Producer {
+    clients: Arc<RwLock<Clients>>,
+    message_queue: Arc<List<PublishPacket>>
+}
+
+impl Producer {
+    async unsafe fn listen_many(&self) {
+        let listen = &self.clients.read().await;
+        while listen.len() == 0 {
+            yield_now().await;
+            time::sleep(Duration::from_millis(5)).await;
+        }
+    
+        for c in listen.iter() {
+            let mut buffer = BytesMut::new();
+            let cval = c.load(Ordering::Relaxed);
+            match (*cval).listen(&mut buffer).await {
+                Ok(0) => {
+                    let cval = c.load(Ordering::Acquire);
+                    (*cval).set_alive(false);
+                }, Ok(_) => {
+                    let packet = PublishPacket::deserialize(&mut buffer).unwrap();
+                    println!("topic: {}, payload {}", packet.topic, String::from_utf8(packet.payload).unwrap())
+                }, Err(err) => { println!("err: {}", err.to_string()) }
+            };
+        }
+    }
+}
+
+impl MessageProducer for Producer {
+    type T = PublishPacket;
+    fn send(&self, val: Self::T) {
+        self.message_queue.append(val)
     }
 }
 

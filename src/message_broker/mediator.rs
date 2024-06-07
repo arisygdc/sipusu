@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use bytes::BytesMut;
 use tokio::{sync::{Mutex, RwLock}, task::JoinHandle, time};
 use crate::protocol::mqtt::PublishPacket;
@@ -65,6 +65,7 @@ impl BrokerMediator {
             loop {
                 if let Some(v) = msg.take_first() {
                     println!("[msg thread] {}", String::from_utf8(v.payload).unwrap());
+                    continue;
                 }
                 time::sleep(Duration::from_millis(5)).await;
             }

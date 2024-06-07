@@ -28,10 +28,10 @@ async fn app() {
     let (svr, broker) = bind(addr.clone()).await;
     println!("[server] running on {}", addr);
 
-    let _ = join!(svr, broker);
+    let _ = join!(svr, broker.0, broker.1);
 }
 
-async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, JoinHandle<()>) {
+async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, (JoinHandle<()>, JoinHandle<()>)) {
     // let cert = CertificatePath::default();
     println!("running mediator");
 

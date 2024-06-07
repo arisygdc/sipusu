@@ -1,10 +1,10 @@
 use std::{net::SocketAddr, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use bytes::BytesMut;
-use tokio::{sync::RwLock, task::JoinHandle, time};
+use tokio::{sync::{Mutex, RwLock}, task::JoinHandle, time};
 use crate::protocol::mqtt::PublishPacket;
 use super::{client::Client, linked_list::List};
 
-type Clients = Vec<AtomicPtr<Client>>;
+type Clients = Vec<Mutex<Client>>;
 
 pub struct BrokerMediator {
     clients: Arc<RwLock<Clients>>,
@@ -21,9 +21,9 @@ impl BrokerMediator {
 
 impl BrokerMediator {
     pub async fn register(&self, client: Client) {
-        let mut client = client;
+        let client = client;
         println!("[register] client {:?}", client);
-        let value = AtomicPtr::new(&mut client);
+        let value = Mutex::new(client);
         let mut wr = self.clients.write().await;
         wr.push(value);
     }
@@ -31,36 +31,45 @@ impl BrokerMediator {
     pub async fn check_session(&self, clid: &str, addr: &SocketAddr) -> Option<u32> {
         let read = self.clients.read().await;
         for c in read.iter() {
-            let c = c.load(Ordering::Relaxed);
-            unsafe {
-                if !(*c).client_id.eq(clid) {
-                    continue;
-                }
-    
-                if (*c).addr.eq(addr) {
-                    return Some((*c).conn_num);
-                }
+            let c = c.lock().await;
+            if !c.client_id.eq(clid) {
+                continue;
+            }
+
+            if c.addr.eq(addr) {
+                return Some(c.conn_num);
             }
         }
         
         None
     }
 
-    pub fn run(&self) -> JoinHandle<()> {
+    pub fn run(&self) -> (JoinHandle<()>, JoinHandle<()>) {
         let producer = Producer {
             clients: self.clients.clone(),
             message_queue: self.message_queue.clone()
         };
 
+        let msg = self.message_queue.clone();
+
         let future = async move {
             println!("[entering] broker");
             let producer = producer;
             loop { 
-                time::sleep(Duration::from_millis(3)).await;
+                time::sleep(Duration::from_millis(10)).await;
                 unsafe{ producer.listen_many().await } 
             }
         };
-        tokio::spawn(future)
+        let t1 = tokio::spawn(future);
+        let t2 = tokio::spawn(async move {
+            loop {
+                if let Some(v) = msg.take_first() {
+                    println!("[msg thread] {}", String::from_utf8(v.payload).unwrap());
+                }
+                time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+        (t1, t2)
     }
 }
 
@@ -78,18 +87,21 @@ impl Producer {
         
         for c in listen.iter() {
             let mut buffer = BytesMut::zeroed(512);
-            let cval = c.load(Ordering::Relaxed);
-            println!("[listening] stream {:?}", (*cval).conn_num);
-            match (*cval).listen(&mut buffer).await {
+            let mut cval = c.lock().await;
+            // println!("{:?}", cval);
+            match cval.listen(&mut buffer).await {
                 Ok(0) => {
-                    let cval = c.load(Ordering::Acquire);
-                    (*cval).set_alive(false);
+                    // println!("[closed] {}", cval.client_id);
+                    cval.set_alive(false);
+                    continue;
                 }, Ok(_) => {
                     let packet = PublishPacket::deserialize(&mut buffer).unwrap();
-                    println!("[packet] topic: {}, payload {}", packet.topic, String::from_utf8(packet.payload).unwrap())
+                    println!("[packet] topic: {}, payload {}", packet.topic, String::from_utf8(packet.payload.clone()).unwrap());
+                    self.message_queue.append(packet);
                 }, Err(err) => { println!("err: {}", err.to_string()) }
             };
         }
+        // println!("[looooooppp]")
     }
 }
 

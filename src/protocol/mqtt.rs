@@ -14,7 +14,7 @@ pub struct ConnectPacket {
     pub keep_alive: u16,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct PublishPacket {
     pub topic: String,
     pub payload: Vec<u8>,
@@ -148,8 +148,16 @@ impl PublishPacket {
         let topic = String::from_utf8(bytes.split_to(topic_len).to_vec()).map_err(|_| "Invalid topic")?;
 
         // Payload
-        let payload = bytes.split().to_vec();
+        let mut payload = bytes.split().to_vec();
+        let mut payload_leng = payload.len();
+        for ( i, p ) in payload.iter().enumerate() {
+            if 0.eq(p) { 
+                payload_leng = i;
+                break;
+            }
+        }
 
+        payload.drain(payload_leng..);
         Ok(Self {
             topic,
             payload,

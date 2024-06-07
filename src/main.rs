@@ -26,7 +26,6 @@ fn main() {
 async fn app() {
     let addr = "127.0.0.1:3306".to_owned();
     let (svr, broker) = bind(addr.clone()).await;
-    // broker.abort();
     println!("[server] running on {}", addr);
 
     let _ = join!(svr, broker);

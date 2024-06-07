@@ -42,6 +42,7 @@ impl Client {
     }
 
     pub(super) async fn listen(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        println!("[inner] listen {}", self.client_id);
         match self.socket.borrow_mut() {
             Socket::Plain(v) => v.read(buffer).await,
             Socket::Secure(v) => v.read(buffer).await

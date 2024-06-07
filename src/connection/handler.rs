@@ -24,7 +24,6 @@ impl Proxy {
         // TODO: validate ack
         let req_ack = ack.read_ack().await?;
 
-        println!("{:?}", req_ack);
         let session = match self.broker.check_session(&req_ack.client_id, addr).await {
             Some(_) => SessionFlag::Preset,
             None => SessionFlag::New

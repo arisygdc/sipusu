@@ -62,8 +62,9 @@ impl<S> MQTTHandshake for ConnectedLine<S>
     where S: Streamer + Send + Sync + 'static 
 {
     async fn read_ack(&mut self) -> io::Result<ConnectPacket> {
-        let mut buffer = BytesMut::with_capacity(30);
+        let mut buffer = BytesMut::zeroed(128);
         self.read_timeout(&mut buffer, 1).await?;
+        println!("{:?}", buffer);
         let packet = ConnectPacket::deserialize(&mut buffer)
             .map_err(|e| io::Error::new(
                 ErrorKind::InvalidData, 

@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use bytes::BytesMut;
+use dashmap::DashMap;
 use tokio::{sync::{Mutex, RwLock}, task::{yield_now, JoinHandle}, time};
 use crate::protocol::mqtt::PublishPacket;
 use super::{client::Client, linked_list::List};
@@ -50,28 +51,55 @@ impl BrokerMediator {
             message_queue: self.message_queue.clone()
         };
 
-        let msg = self.message_queue.clone();
+        let consumer = Consumer {
+            forward: Arc::new(DashMap::new()),
+            message_queue: self.message_queue.clone()
+        };
 
         let future = async move {
             println!("[entering] broker");
             let producer = producer;
             loop { 
-                time::sleep(Duration::from_millis(10)).await;
                 unsafe{ producer.listen_many().await } 
             }
         };
         let t1 = tokio::spawn(future);
         let t2 = tokio::spawn(async move {
             loop {
-                if let Some(v) = msg.take_first() {
-                    println!("[msg thread] {}", String::from_utf8(v.payload).unwrap());
+                if let Some(mut v) = consumer.message_queue.take_first() {
+                    println!("[msg thread] {}", String::from_utf8(v.payload.clone()).unwrap());
+                    // TODO: sequential write into disk
+                    let mut clients = match consumer.forward.get_mut(&v.topic) {
+                        Some(c) => c,
+                        None => {
+                            println!("find a way to save unsent message");
+                            continue;
+                        }
+                    };
+
+                    if clients.len() == 0 {
+                        println!("find a way to save unsent message");
+                        continue;
+                    }
+
+                    for c in clients.iter_mut() {
+                        let mut c = c.lock().await;
+                        c.write(&mut v.payload).await.unwrap();
+                    }
+
+                    
                     continue;
                 }
-                time::sleep(Duration::from_millis(3)).await;
+                time::sleep(Duration::from_millis(10)).await;
             }
         });
         (t1, t2)
     }
+}
+
+struct Consumer {
+    message_queue: Arc<List<PublishPacket>>,
+    forward: Arc<DashMap<String, Clients>>
 }
 
 struct Producer {
@@ -83,6 +111,7 @@ impl Producer {
     async unsafe fn listen_many(&self) {
         let listen = self.clients.read().await;
         if listen.len() == 0 {
+            time::sleep(Duration::from_millis(5)).await;
             return ;
         }
         

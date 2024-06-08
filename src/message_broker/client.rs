@@ -1,5 +1,5 @@
 use std::{borrow::BorrowMut, io, mem, net::SocketAddr, sync::atomic::{AtomicBool, Ordering}, time::{SystemTime, UNIX_EPOCH}};
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use crate::{connection::handler::SecuredStream, protocol::mqtt::ConnectPacket};
 
 #[derive(Debug)]
@@ -47,6 +47,13 @@ impl Client {
         match self.socket.borrow_mut() {
             Socket::Plain(v) => v.read(buffer).await,
             Socket::Secure(v) => v.read(buffer).await
+        }
+    }
+
+    pub(super) async fn write(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+        match self.socket.borrow_mut() {
+            Socket::Plain(v) => v.write_all(&buffer).await,
+            Socket::Secure(v) => v.write_all(&buffer).await
         }
     }
 

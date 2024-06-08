@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, io, mem, net::SocketAddr, sync::atomic::{AtomicBool, Ordering}};
+use std::{borrow::BorrowMut, io, mem, net::SocketAddr, sync::atomic::{AtomicBool, Ordering}, time::{SystemTime, UNIX_EPOCH}};
 use tokio::{io::AsyncReadExt, net::TcpStream};
 use crate::{connection::handler::SecuredStream, protocol::mqtt::ConnectPacket};
 
@@ -15,6 +15,7 @@ pub struct Client {
     pub(super) alive: AtomicBool,
     socket: Socket,
     pub(super) addr: SocketAddr,
+    dead_on: Option<u64>,
     protocol_name: String,
     protocol_level: u8,
     pub(super) client_id: String,
@@ -33,6 +34,7 @@ impl Client {
             conn_num,
             addr,
             socket,
+            dead_on: None,
             client_id: mem::take(&mut pkt.client_id),
             alive: AtomicBool::new(true),
             keep_alive: pkt.keep_alive,
@@ -48,14 +50,40 @@ impl Client {
         }
     }
 
-    pub(super) fn set_alive(&mut self, state: bool) -> bool {
-        self.alive.swap(state, Ordering::AcqRel);
-        let res = self.alive.compare_exchange(
-            true,
-            false, 
-            Ordering::Release, 
-            Ordering::Acquire
+    /// when set alive state = false
+    /// it will schedule dead time
+    pub(super) fn set_alive(&mut self, state: bool) {
+        let cpmx = self.alive.compare_exchange(
+            !state, 
+            state, 
+            Ordering::Acquire, 
+            Ordering::Relaxed
         );
-        res.is_ok()
+
+        if cpmx.is_ok() {
+            let untime = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            self.dead_on = Some(untime);
+        }
+    }
+
+    #[inline]
+    pub(super) fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(super) fn is_dead_time(&self) -> bool {
+        if let Some(d) = self.dead_on {
+            let untime = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            return untime > d;
+        }
+        false
     }
 }

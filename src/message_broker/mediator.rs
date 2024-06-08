@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use bytes::BytesMut;
-use tokio::{sync::{Mutex, RwLock}, task::JoinHandle, time};
+use tokio::{sync::{Mutex, RwLock}, task::{yield_now, JoinHandle}, time};
 use crate::protocol::mqtt::PublishPacket;
 use super::{client::Client, linked_list::List};
 
@@ -67,7 +67,7 @@ impl BrokerMediator {
                     println!("[msg thread] {}", String::from_utf8(v.payload).unwrap());
                     continue;
                 }
-                time::sleep(Duration::from_millis(5)).await;
+                time::sleep(Duration::from_millis(3)).await;
             }
         });
         (t1, t2)
@@ -89,12 +89,21 @@ impl Producer {
         for c in listen.iter() {
             let mut buffer = BytesMut::zeroed(512);
             let mut cval = c.lock().await;
-            // println!("{:?}", cval);
+            if !cval.is_alive() {
+                continue;
+            }
+
             match cval.listen(&mut buffer).await {
                 Ok(0) => {
-                    // println!("[closed] {}", cval.client_id);
+                    if !cval.is_alive() {
+                        yield_now().await;
+                        if cval.is_dead_time() {
+                            // TODO: remove the client when is dead
+                        }
+                        continue;
+                    }
                     cval.set_alive(false);
-                    continue;
+                    yield_now().await;
                 }, Ok(_) => {
                     let packet = PublishPacket::deserialize(&mut buffer).unwrap();
                     println!("[packet] topic: {}, payload {}", packet.topic, String::from_utf8(packet.payload.clone()).unwrap());

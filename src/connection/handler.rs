@@ -24,13 +24,12 @@ impl Proxy {
         // TODO: validate ack
         let req_ack = ack.read_ack().await?;
 
-        let session = match self.broker.check_session(&req_ack.client_id, addr).await {
+        let session = match self.broker.wakeup_exists(&req_ack.client_id, addr).await {
             Some(_) => SessionFlag::Preset,
             None => SessionFlag::New
         };
         
         ack.connack(session, 0).await.unwrap();
-        
         Ok(req_ack)
     }
 }

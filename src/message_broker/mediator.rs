@@ -29,15 +29,16 @@ impl BrokerMediator {
         wr.push(value);
     }
 
-    pub async fn check_session(&self, clid: &str, addr: &SocketAddr) -> Option<u32> {
+    pub async fn wakeup_exists(&self, clid: &str, addr: &SocketAddr) -> Option<u32> {
         let read = self.clients.read().await;
         for c in read.iter() {
-            let c = c.lock().await;
+            let mut c = c.lock().await;
             if !c.client_id.eq(clid) {
                 continue;
             }
 
             if c.addr.eq(addr) {
+                c.set_alive(true);
                 return Some(c.conn_num);
             }
         }

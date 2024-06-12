@@ -47,17 +47,17 @@ impl BrokerMediator {
         None
     }
 
-    pub fn run(&self) -> (JoinHandle<()>, JoinHandle<()>) {
+    pub fn join_handle(&mut self) -> (JoinHandle<()>, JoinHandle<()>) {
         let producer = Producer::new(
             self.clients.clone(),
             self.message_queue.clone()
         );
-
+    
         let consumer = Consumer::new(
             self.message_queue.clone(),
             self.subscriber.clone(),
         );
-
+    
         let t1 = tokio::spawn(event_listener(producer));
         let t2 = tokio::spawn(observer_message(consumer));
         (t1, t2)

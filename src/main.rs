@@ -35,8 +35,8 @@ async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<i
     // let cert = CertificatePath::default();
     println!("running mediator");
 
-    let mediator: BrokerMediator = BrokerMediator::new();
-    let broker_task = mediator.run();
+    let mut mediator: BrokerMediator = BrokerMediator::new();
+    let broker_task = mediator.join_handle();
     let handler = Proxy::new(mediator).await.unwrap();
     let server = Server::new(None, handler).await;
 
@@ -45,5 +45,6 @@ async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<i
         Ok(v) => v,
         Err(e) => panic!("{}", e.to_string())
     };
+    
     (task1, broker_task)
 }

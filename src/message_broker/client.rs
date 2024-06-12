@@ -1,11 +1,46 @@
-use std::{borrow::BorrowMut, io, mem, net::SocketAddr, sync::atomic::{AtomicBool, Ordering}, time::{SystemTime, UNIX_EPOCH}};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
+use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::Mutex};
 use crate::{connection::handler::SecuredStream, protocol::mqtt::ConnectPacket};
+extern crate tokio;
+
 
 #[derive(Debug)]
-pub enum Socket {
+pub enum SocketInner {
     Secure(SecuredStream), 
     Plain(TcpStream)
+}
+
+#[derive(Debug)]
+pub struct Socket {
+    inner: Arc<Mutex<SocketInner>>
+}
+
+impl Socket {
+    async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut guard = self.inner.lock().await;
+        match &mut *guard {
+            SocketInner::Plain(ref mut v) => {
+                let mut stream = unsafe { Pin::new_unchecked(v) };
+                stream.read(buf).await
+            }, SocketInner::Secure(ref mut v) => {
+                let mut stream = unsafe { Pin::new_unchecked(v) };
+                stream.read(buf).await
+            }
+        }
+    }
+
+    async fn write_all(&self, buf: &mut [u8]) -> io::Result<()> {
+        let mut guard = self.inner.lock().await;
+        match &mut *guard {
+            SocketInner::Plain(ref mut v) => {
+                let mut stream = unsafe { Pin::new_unchecked(v) };
+                stream.write_all(buf).await
+            }, SocketInner::Secure(ref mut v) => {
+                let mut stream = unsafe { Pin::new_unchecked(v) };
+                stream.write_all(buf).await
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -25,11 +60,12 @@ pub struct Client {
 impl Client {
     pub fn new(
         conn_num: u32,
-        socket: Socket,
+        socket: SocketInner,
         addr: SocketAddr, 
         conn_pkt: ConnectPacket
     ) -> Self {
         let mut pkt = conn_pkt;
+        let socket = Socket { inner: Arc::new(Mutex::new(socket)) };
         Self {
             conn_num,
             addr,
@@ -43,18 +79,17 @@ impl Client {
         }
     }
 
+    pub(super) async fn clone_socket(&self) -> Socket {
+        let socket = Arc::clone(&self.socket.inner);
+        Socket { inner: socket }
+    }
+
     pub(super) async fn listen(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self.socket.borrow_mut() {
-            Socket::Plain(v) => v.read(buffer).await,
-            Socket::Secure(v) => v.read(buffer).await
-        }
+        self.socket.read(buffer).await
     }
 
     pub(super) async fn write(&mut self, buffer: &mut [u8]) -> io::Result<()> {
-        match self.socket.borrow_mut() {
-            Socket::Plain(v) => v.write_all(&buffer).await,
-            Socket::Secure(v) => v.write_all(&buffer).await
-        }
+        self.socket.write_all(buffer).await
     }
 
     /// when set alive state = false

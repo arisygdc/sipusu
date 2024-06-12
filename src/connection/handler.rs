@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
 use super::line::{ConnectedLine, Streamer};
 use tokio::net::TcpStream;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
-use crate::{connection::line::{MQTTHandshake, SessionFlag}, message_broker::{client::{Client, Socket}, mediator::BrokerMediator}, protocol::mqtt::ConnectPacket, server::Wire};
+use crate::{connection::line::{MQTTHandshake, SessionFlag}, message_broker::{client::{Client, SocketInner}, mediator::BrokerMediator}, protocol::mqtt::ConnectPacket, server::Wire};
 
 pub type SecuredStream = TlsStream<TcpStream>;
 impl Streamer for SecuredStream {}
@@ -63,7 +63,7 @@ impl Wire for Proxy
 
             }
         };
-        let client = Client::new(line.conn_num, Socket::Secure(line.socket), addr, req_ackk);
+        let client = Client::new(line.conn_num, SocketInner::Secure(line.socket), addr, req_ackk);
 
         self.broker.register(client).await;
     }
@@ -72,7 +72,7 @@ impl Wire for Proxy
         let id = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire);
         let mut line = ConnectedLine::new(id, stream);
         let req_ackk = self.establish_connection(&mut line, &addr).await.unwrap();
-        let client = Client::new(line.conn_num, Socket::Plain(line.socket), addr, req_ackk);
+        let client = Client::new(line.conn_num, SocketInner::Plain(line.socket), addr, req_ackk);
         self.broker.register(client).await;
     }
 }

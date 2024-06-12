@@ -64,30 +64,25 @@ impl<T> List<T> {
 
 impl<T: Default> List<T> {
     pub fn take_first(&self) -> Option<T> {
-        #[allow(unused_assignments)]
-        let mut default: T = T::default();
+        // #[allow(unused_assignments)]
+        let default;
 
         let head = self.head.load(Ordering::SeqCst);
-        loop {
-            if head.is_null() {
-                return None;
-            }
-
-            unsafe {
-                default = mem::take(&mut (*head).val);
-                let sec = (*head).next.load(Ordering::SeqCst);
-                let cmp = self.head.compare_exchange(
-                    head, 
-                    sec, 
-                    Ordering::SeqCst, 
-                    Ordering::SeqCst
-                );
-
-                if cmp.is_ok() {
-                    return Some(default);
-                }
-            }
+        if head.is_null() {
+            return None;
         }
+
+        let cmp = unsafe {
+            default = mem::take(&mut (*head).val);
+            let sec = (*head).next.load(Ordering::SeqCst);
+            self.head.compare_exchange(
+                head, 
+                sec, 
+                Ordering::SeqCst, 
+                Ordering::SeqCst
+            )
+        };
+        cmp.ok().map(|_| default)
     }
 }
 

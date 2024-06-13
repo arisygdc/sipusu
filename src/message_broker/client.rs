@@ -1,4 +1,4 @@
-use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
+use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::Mutex};
 use crate::{connection::handler::SecuredStream, protocol::mqtt::ConnectPacket};
 extern crate tokio;
@@ -50,7 +50,7 @@ pub struct Client {
     pub(super) alive: AtomicBool,
     socket: Socket,
     pub(super) addr: SocketAddr,
-    dead_on: Option<u64>,
+    dead_on: AtomicU64,
     protocol_name: String,
     protocol_level: u8,
     pub(super) client_id: String,
@@ -70,7 +70,7 @@ impl Client {
             conn_num,
             addr,
             socket,
-            dead_on: None,
+            dead_on: AtomicU64::new(0),
             client_id: mem::take(&mut pkt.client_id),
             alive: AtomicBool::new(true),
             keep_alive: pkt.keep_alive,
@@ -79,22 +79,22 @@ impl Client {
         }
     }
 
-    pub(super) async fn clone_socket(&self) -> Socket {
+    pub(super) fn clone_socket(&self) -> Socket {
         let socket = Arc::clone(&self.socket.inner);
         Socket { inner: socket }
     }
 
-    pub(super) async fn listen(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+    pub(super) async fn listen(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.socket.read(buffer).await
     }
 
-    pub(super) async fn write(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+    pub(super) async fn write(&self, buffer: &mut [u8]) -> io::Result<()> {
         self.socket.write_all(buffer).await
     }
 
     /// when set alive state = false
     /// it will schedule dead time
-    pub(super) fn set_alive(&mut self, state: bool) {
+    pub(super) fn set_alive(&self, state: bool) {
         let cpmx = self.alive.compare_exchange(
             !state, 
             state, 
@@ -102,14 +102,19 @@ impl Client {
             Ordering::Relaxed
         );
 
-        if cpmx.is_ok() {
-            let untime = SystemTime::now()
+        if cpmx.is_err() {
+            return;
+        }
+
+        let mut untime = 0;
+        if state == false {
+            untime = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-
-            self.dead_on = Some(untime);
         }
+
+        self.dead_on.store(untime, Ordering::Release)
     }
 
     #[inline]
@@ -119,13 +124,15 @@ impl Client {
 
     #[inline]
     pub(super) fn is_dead_time(&self) -> bool {
-        if let Some(d) = self.dead_on {
-            let untime = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            return untime > d;
+        let dtime = self.dead_on.load(Ordering::Acquire);
+        if dtime == 0 {
+            return false;
         }
-        false
+
+        let untime = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        return untime > dtime;
     }
 }

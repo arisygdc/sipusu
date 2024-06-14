@@ -26,37 +26,6 @@ pub struct PublishPacket {
 }
 
 impl ConnectPacket {
-    pub fn serialize(&self) -> BytesMut {
-        let mut buf = BytesMut::new();
-        buf.put_u8(0x10); // CONNECT packet type
-
-        // Remaining length (for simplicity, we assume it fits in one byte)
-        let remaining_length = 10 + self.protocol_name.len() + self.client_id.len();
-        buf.put_u8(remaining_length as u8);
-
-        // Protocol name
-        buf.put_u8((self.protocol_name.len() >> 8) as u8);
-        buf.put_u8(self.protocol_name.len() as u8);
-        buf.put_slice(self.protocol_name.as_bytes());
-
-        // Protocol level
-        buf.put_u8(self.protocol_level);
-
-        // Connect flags (we use default flags here)
-        buf.put_u8(0x02);
-
-        // Keep alive
-        buf.put_u8((self.keep_alive >> 8) as u8);
-        buf.put_u8(self.keep_alive as u8);
-
-        // Client ID
-        buf.put_u8((self.client_id.len() >> 8) as u8);
-        buf.put_u8(self.client_id.len() as u8);
-        buf.put_slice(self.client_id.as_bytes());
-
-        buf
-    }
-
     pub fn deserialize(bytes: &mut BytesMut) -> Result<Self, &'static str> {
         if bytes[0] != 0x10 {
             return Err("Invalid CONNECT packet type");
@@ -95,12 +64,12 @@ impl ConnectPacket {
 }
 
 impl SubscribePacket {
-    pub fn deserialize(buffer: &mut BytesMut) -> Result<Self, &'static str> {
-        if buffer.get_u8() == 0x82 {
-            Self::skip_header(buffer);
-        }
-        Err("invalid subscribe packet")
-    }
+    // pub fn deserialize(buffer: &mut BytesMut) -> Result<Self, &'static str> {
+    //     if buffer.get_u8() == 0x82 {
+    //         Self::skip_header(buffer);
+    //     }
+    //     Err("invalid subscribe packet")
+    // }
 
     fn skip_header(buffer: &mut BytesMut) -> Result<Self, &'static str> {
         let _leng = buffer.get_u8();
@@ -149,12 +118,12 @@ impl PublishPacket {
         buf
     }
 
-    pub fn deserialize(buffer: &mut BytesMut) -> Result<Self, &'static str> {
-        if buffer[0] != 0x30 {
-            return Err("Invalid PUBLISH packet type");
-        }
-        Self::skip_header(buffer)
-    }
+    // pub fn deserialize(buffer: &mut BytesMut) -> Result<Self, &'static str> {
+    //     if buffer[0] != 0x30 {
+    //         return Err("Invalid PUBLISH packet type");
+    //     }
+    //     Self::skip_header(buffer)
+    // }
 
     fn skip_header(buffer: &mut BytesMut) -> Result<Self, &'static str> {
         // Skip the packet type byte

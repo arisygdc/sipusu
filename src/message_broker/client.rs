@@ -1,6 +1,9 @@
 use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::Mutex};
-use crate::{connection::handler::SecuredStream, protocol::mqtt::ConnectPacket};
+use bytes::BytesMut;
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::{Mutex, RwLock}, task::yield_now};
+use crate::{connection::handler::SecuredStream, protocol::mqtt::{ConnectPacket, MqttClientPacket}};
+
+use super::{Consumer, Event, EventListener};
 extern crate tokio;
 
 
@@ -79,11 +82,6 @@ impl Client {
         }
     }
 
-    pub(super) fn clone_socket(&self) -> Socket {
-        let socket = Arc::clone(&self.socket.inner);
-        Socket { inner: socket }
-    }
-
     pub(super) async fn listen(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.socket.read(buffer).await
     }
@@ -134,5 +132,112 @@ impl Client {
             .unwrap()
             .as_secs();
         return untime > dtime;
+    }
+}
+
+type MutexClients = RwLock<Vec<Client>>;
+
+pub struct Clients(Arc<MutexClients>);
+
+impl Clients {
+    pub fn new() -> Self {
+        Self(Arc::new(RwLock::new(Vec::new())))
+    }
+    
+    /// insert sort by conn number
+    pub async fn insert(&self, new_cl: Client) {
+        let mut clients = self.0.write().await;
+
+        let mut found = clients.len();
+        for (i, cval) in clients.iter().enumerate() {
+            match new_cl.conn_num.cmp(&cval.conn_num) {
+                std::cmp::Ordering::Equal => panic!("kok iso"),
+                std::cmp::Ordering::Greater => continue,
+                std::cmp::Ordering::Less => ()
+            }
+
+            found = i;
+            break;
+        }
+        clients.insert(found, new_cl);
+    }
+
+    pub async fn remove(&self, con_num: u32) -> Result<(), String> {
+        let mut clients = self.0.write().await;
+        let idx = clients.binary_search_by(|c| con_num.cmp(&c.conn_num))
+            .map_err(|_| format!("cannot find conn num {}", con_num))?;
+        clients.remove(idx);
+        Ok(())
+    }
+
+    pub async fn find<R>(&self, clid: &str, f: impl FnOnce(&Client) -> R) -> Option<R> {
+        let clients = self.0.read().await;
+        for client in clients.iter() {
+            if client.client_id.eq(clid) {
+                return Some(f(client));
+            }
+        }
+        None
+    }
+}
+
+impl EventListener for Clients {
+    async fn listen_all<E>(&self, event: &E) 
+        where E: Event + Send + Sync 
+    {
+        let listeners = self.0.read().await;
+        
+        for cval in listeners.iter() {
+            let mut buffer = BytesMut::zeroed(512);
+            if !cval.is_alive() {
+                yield_now().await;
+                if !cval.is_dead_time() {
+                    continue;
+                }
+                
+                self.remove(cval.conn_num)
+                    .await
+                    .unwrap();
+            }
+
+            match cval.listen(&mut buffer).await {
+                Ok(0) => {
+                    yield_now().await;
+
+                    if cval.is_alive() {
+                        cval.set_alive(false); 
+                    }
+                }, 
+                Ok(_) => (), 
+                Err(err) => { println!("err: {}", err.to_string()) }
+            };
+            
+            let packet = MqttClientPacket::deserialize(&mut buffer).unwrap();
+            match packet {
+                MqttClientPacket::Publish(p) 
+                    => event.enqueue_message(p),
+                MqttClientPacket::Subscribe(s) 
+                    => event.subscribe_topic(s, cval.conn_num).await
+            }
+        }
+    }
+
+    async fn count_listener(&self) -> usize {
+        self.0.read().await.len()
+    }
+}
+
+impl Consumer for Clients {
+    async fn pubish(&self, con_id: u32, packet: crate::protocol::mqtt::PublishPacket) -> io::Result<()> {
+        let clients = self.0.read().await;
+        let idx = clients.binary_search_by(|c| con_id.cmp(&c.conn_num)).unwrap();
+        let mut buffer = packet.serialize();
+        clients[idx].write(&mut buffer).await
+    }
+}
+
+impl Clone for Clients {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }

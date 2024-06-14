@@ -27,7 +27,7 @@ impl Server {
         let handler = self.handler;
         let c_loader = match &self.cert {
             Some(cert) => cert, 
-            None => return Ok(tokio::spawn(Self::bind_unsecure(addr, handler)))
+            None => return Ok(tokio::task::spawn(Self::bind_unsecure(addr, handler)))
         };
 
         let certs = c_loader.load_certs()?;
@@ -38,7 +38,7 @@ impl Server {
             .with_single_cert(certs, key)   
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
-        let join_handle = tokio::spawn(Self::bind_secure(addr, handler, tls_config));
+        let join_handle = tokio::task::spawn(Self::bind_secure(addr, handler, tls_config));
         Ok(join_handle)
     }
 

@@ -4,6 +4,8 @@ use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time};
 use crate::protocol::mqtt::ConnectPacket;
 
+use super::ConnectionID;
+
 pub trait Streamer: 
 AsyncReadExt
 + AsyncWriteExt
@@ -13,14 +15,14 @@ AsyncReadExt
 pub struct ConnectedLine<S>
     where S: Streamer + Send + Sync + 'static
 {
-    pub(super) conn_num: u32,
+    pub(super) conn_num: ConnectionID,
     pub(super) socket: S,
 }
 
 impl<S> ConnectedLine<S>
     where S: Streamer + Send + Sync + 'static 
 {
-    pub fn new(conn_num: u32, socket: S) -> Self {
+    pub fn new(conn_num: ConnectionID, socket: S) -> Self {
         Self { conn_num, socket }
     }
 

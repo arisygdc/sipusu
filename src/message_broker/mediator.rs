@@ -1,12 +1,12 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{task::JoinHandle, time};
-use crate::protocol::mqtt::PublishPacket;
+use crate::{connection::ConnectionID, protocol::mqtt::PublishPacket};
 use super::{client::{Client, Clients}, linked_list::List, provider::EventHandler, trie::Trie, Consumer, Event, EventListener, Messanger};
 
 pub struct BrokerMediator {
     clients: Clients,
     message_queue: Arc<List<PublishPacket>>,
-    router: Arc<Trie<u32>>,
+    router: Arc<Trie<ConnectionID>>,
 }
 
 impl BrokerMediator {
@@ -25,11 +25,11 @@ impl BrokerMediator {
         self.clients.insert(client).await
     }
 
-    pub async fn wakeup_exists(&self, clid: &str, addr: &SocketAddr) -> Option<u32> {
+    pub async fn wakeup_exists(&self, clid: &str, addr: &SocketAddr) -> Option<ConnectionID> {
         let res = self.clients.find(clid, |c| {
             if c.addr.eq(addr) {
                 c.set_alive(true);
-                return Some(c.conn_num);
+                return Some(c.conid.clone());
             }
                 
             None
@@ -72,9 +72,10 @@ async fn observer_message<M, S>(provider: M, forwarder: S)
     loop {
         if let Some(packet) = provider.dequeue_message() {
             let to = provider.route(&packet.topic).await;
+            println!("[to] {:?}", to);
             let dst = match to {
                 None => continue,
-                Some(dst) => dst[0]
+                Some(dst) => dst[0].clone()
             };
             forwarder.pubish(dst, packet).await.unwrap();
         }

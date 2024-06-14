@@ -1,5 +1,5 @@
 use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
-use super::line::{ConnectedLine, Streamer};
+use super::{line::{ConnectedLine, Streamer}, ConnectionID};
 use tokio::net::TcpStream;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use crate::{connection::line::{MQTTHandshake, SessionFlag}, message_broker::{client::{Client, SocketInner}, mediator::BrokerMediator}, protocol::mqtt::ConnectPacket, server::Wire};
@@ -32,13 +32,17 @@ impl Proxy {
         ack.connack(session, 0).await.unwrap();
         Ok(req_ack)
     }
+
+    fn request_id(&self) -> ConnectionID {
+        let fetch = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Release);
+        ConnectionID(fetch)
+    }
 }
 
 impl Wire for Proxy
 {
     async fn connect_with_tls(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) {
-        // stream.split();
-        let id = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire);
+        let id = self.request_id();
         println!("[stream] process id {}", id);
         let secured_stream = match tls.accept(stream).await {
             Ok(v) => v,
@@ -60,7 +64,6 @@ impl Wire for Proxy
                     let _ = line.write(&mut err_response).await;
                 }
                 return ;
-
             }
         };
         let client = Client::new(line.conn_num, SocketInner::Secure(line.socket), addr, req_ackk);
@@ -69,7 +72,7 @@ impl Wire for Proxy
     }
 
     async fn connect(&self, stream: TcpStream, addr: SocketAddr) {
-        let id = self.access_total.fetch_add(1, std::sync::atomic::Ordering::Acquire);
+        let id = self.request_id();
         let mut line = ConnectedLine::new(id, stream);
         let req_ackk = self.establish_connection(&mut line, &addr).await.unwrap();
         let client = Client::new(line.conn_num, SocketInner::Plain(line.socket), addr, req_ackk);

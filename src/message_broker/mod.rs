@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::protocol::mqtt::{PublishPacket, SubscribePacket};
+use crate::{connection::ConnectionID, protocol::mqtt::{PublishPacket, SubscribePacket}};
 
 pub mod client;
 pub mod mediator;
@@ -16,7 +16,7 @@ mod provider;
 
 pub trait Event {
     fn enqueue_message(&self, msg: PublishPacket);
-    fn subscribe_topic(&self, sub: SubscribePacket, con_id: u32) -> impl std::future::Future<Output = ()> + Send;
+    fn subscribe_topic(&self, sub: SubscribePacket, con_id: ConnectionID) -> impl std::future::Future<Output = ()> + Send;
 }
 
 pub trait EventListener {
@@ -27,10 +27,10 @@ pub trait EventListener {
 }
 
 pub trait Consumer {
-    fn pubish(&self, con_id: u32, packet: PublishPacket) -> impl std::future::Future<Output = io::Result<()>> + Send;
+    fn pubish(&self, con_id: ConnectionID, packet: PublishPacket) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }
 
 pub trait Messanger {
     fn dequeue_message(&self) -> Option<PublishPacket>;
-    fn route(&self, topic: &str) -> impl std::future::Future<Output =  Option<Vec<u32>>> + Send;
+    fn route(&self, topic: &str) -> impl std::future::Future<Output =  Option<Vec<ConnectionID>>> + Send;
 }

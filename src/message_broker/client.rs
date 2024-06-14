@@ -1,7 +1,7 @@
 use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
 use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::{Mutex, RwLock}, task::yield_now};
-use crate::{connection::handler::SecuredStream, protocol::mqtt::{ConnectPacket, MqttClientPacket}};
+use crate::{connection::{handler::SecuredStream, ConnectionID}, protocol::mqtt::{ConnectPacket, MqttClientPacket}};
 
 use super::{Consumer, Event, EventListener};
 extern crate tokio;
@@ -49,7 +49,7 @@ impl Socket {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Client {
-    pub(super) conn_num: u32,
+    pub(super) conid: ConnectionID,
     pub(super) alive: AtomicBool,
     socket: Socket,
     pub(super) addr: SocketAddr,
@@ -62,7 +62,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(
-        conn_num: u32,
+        conid: ConnectionID,
         socket: SocketInner,
         addr: SocketAddr, 
         conn_pkt: ConnectPacket
@@ -70,7 +70,7 @@ impl Client {
         let mut pkt = conn_pkt;
         let socket = Socket { inner: Arc::new(Mutex::new(socket)) };
         Self {
-            conn_num,
+            conid,
             addr,
             socket,
             dead_on: AtomicU64::new(0),
@@ -150,7 +150,7 @@ impl Clients {
 
         let mut found = clients.len();
         for (i, cval) in clients.iter().enumerate() {
-            match new_cl.conn_num.cmp(&cval.conn_num) {
+            match new_cl.conid.cmp(&cval.conid) {
                 std::cmp::Ordering::Equal => panic!("kok iso"),
                 std::cmp::Ordering::Greater => continue,
                 std::cmp::Ordering::Less => ()
@@ -162,10 +162,10 @@ impl Clients {
         clients.insert(found, new_cl);
     }
 
-    pub async fn remove(&self, con_num: u32) -> Result<(), String> {
+    pub async fn remove(&self, conid: ConnectionID) -> Result<(), String> {
         let mut clients = self.0.write().await;
-        let idx = clients.binary_search_by(|c| con_num.cmp(&c.conn_num))
-            .map_err(|_| format!("cannot find conn num {}", con_num))?;
+        let idx = clients.binary_search_by(|c| conid.cmp(&c.conid))
+            .map_err(|_| format!("cannot find conn num {}", conid))?;
         clients.remove(idx);
         Ok(())
     }
@@ -195,7 +195,7 @@ impl EventListener for Clients {
                     continue;
                 }
                 
-                self.remove(cval.conn_num)
+                self.remove(cval.conid.clone())
                     .await
                     .unwrap();
             }
@@ -218,7 +218,7 @@ impl EventListener for Clients {
                 MqttClientPacket::Publish(p) 
                     => event.enqueue_message(p),
                 MqttClientPacket::Subscribe(s) 
-                    => event.subscribe_topic(s, cval.conn_num).await
+                    => event.subscribe_topic(s, cval.conid.clone()).await
             }
         }
     }
@@ -229,9 +229,9 @@ impl EventListener for Clients {
 }
 
 impl Consumer for Clients {
-    async fn pubish(&self, con_id: u32, packet: crate::protocol::mqtt::PublishPacket) -> io::Result<()> {
+    async fn pubish(&self, con_id: ConnectionID, packet: crate::protocol::mqtt::PublishPacket) -> io::Result<()> {
         let clients = self.0.read().await;
-        let idx = clients.binary_search_by(|c| con_id.cmp(&c.conn_num)).unwrap();
+        let idx = clients.binary_search_by(|c| con_id.cmp(&c.conid)).unwrap();
         let mut buffer = packet.serialize();
         clients[idx].write(&mut buffer).await
     }

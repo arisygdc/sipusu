@@ -1,16 +1,16 @@
 use std::sync::Arc;
-use crate::protocol::mqtt::{PublishPacket, SubscribePacket};
+use crate::{connection::ConnectionID, protocol::mqtt::{PublishPacket, SubscribePacket}};
 
 use super::{linked_list::List, trie::Trie, Event, Messanger};
 
 #[derive(Clone)]
 pub struct EventHandler {
     message_queue: Arc<List<PublishPacket>>,
-    router: Arc<Trie<u32>>
+    router: Arc<Trie<ConnectionID>>
 }
 
 impl EventHandler {
-    pub fn from(message_queue: Arc<List<PublishPacket>>, router: Arc<Trie<u32>>) -> Self {
+    pub fn from(message_queue: Arc<List<PublishPacket>>, router: Arc<Trie<ConnectionID>>) -> Self {
         Self { message_queue, router }
     }
 }
@@ -20,7 +20,7 @@ impl Messanger for EventHandler {
         self.message_queue.take_first()
     }
 
-    async fn route(&self, topic: &str) -> Option<Vec<u32>> {
+    async fn route(&self, topic: &str) -> Option<Vec<ConnectionID>> {
         self.router.get(topic).await
     }
 }
@@ -30,7 +30,7 @@ impl Event for EventHandler {
         self.message_queue.append(msg)
     }
 
-    async fn subscribe_topic(&self, sub: SubscribePacket, con_id: u32) {
+    async fn subscribe_topic(&self, sub: SubscribePacket, con_id: ConnectionID) {
         self.router.insert(&sub.topic, con_id).await
     }
 }

@@ -89,23 +89,22 @@ impl<T> Trie<T>
     } 
 
     pub async fn insert(&self, topic: &str, value: T) {
-        self.with_traverse(topic, |p| {
+        self.with_traverse(topic, |p| unsafe {
             if p.load(Ordering::Acquire).is_null() {
-                Self::empty_atmcnode(p).unwrap();
+                Self::empty_atmcnode(&p).unwrap();
             }
     
-            let val = p.load(Ordering::Acquire);
-            unsafe {(*val).add_subscriber(value)}
+            (*p.load(Ordering::Acquire)).add_subscriber(value) 
         }).await;
     }
 
     pub async fn get(&self, topic: &str) -> Option<Vec<T>> {
-        let m = self.with_traverse(topic, |p| {
+        let m = self.with_traverse(topic, |p| unsafe {
             if p.load(Ordering::Acquire).is_null() {
                 return None;
             }
 
-            Some(unsafe {(*p.load(Ordering::Acquire)).get_subscriber()})
+            Some((*p.load(Ordering::Acquire)).get_subscriber())
         })?.await;
 
         if m.len() == 0 {

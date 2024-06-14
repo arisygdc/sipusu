@@ -207,6 +207,7 @@ impl EventListener for Clients {
                     if cval.is_alive() {
                         cval.set_alive(false); 
                     }
+                    continue;
                 }, 
                 Ok(_) => (), 
                 Err(err) => { println!("err: {}", err.to_string()) }

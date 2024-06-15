@@ -1,12 +1,12 @@
 use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
-use super::{line::{ConnectedLine, Streamer}, ConnectionID};
-use tokio::net::TcpStream;
+use super::{line::ConnHandshake, ConnectionID};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
-use crate::{connection::line::{MQTTHandshake, SessionFlag}, message_broker::{client::{Client, SocketInner}, mediator::BrokerMediator}, protocol::mqtt::ConnectPacket, server::Wire};
+use crate::{connection::line::SessionFlag, message_broker::{client::{Client, SocketInner}, mediator::BrokerMediator}, protocol::mqtt::ConnectPacket, server::Wire};
 
 pub type SecuredStream = TlsStream<TcpStream>;
-impl Streamer for SecuredStream {}
-impl Streamer for TcpStream {}
+impl ConnHandshake for SecuredStream {}
+impl ConnHandshake for TcpStream {}
 
 #[allow(dead_code)]
 pub struct Proxy {
@@ -19,9 +19,8 @@ impl Proxy {
         let access_total = AtomicU32::new(1);
         Ok(Self { access_total, broker })
     }
-
-    async fn establish_connection(&self, ack: &mut impl MQTTHandshake, addr: &SocketAddr) -> io::Result<ConnectPacket> {
-        // TODO: validate ack
+    
+    async fn establish_connection(&self, ack: &mut impl ConnHandshake, addr: &SocketAddr) -> io::Result<ConnectPacket> {
         let req_ack = ack.read_ack().await?;
 
         let session = match self.broker.wakeup_exists(&req_ack.client_id, addr).await {
@@ -44,7 +43,7 @@ impl Wire for Proxy
     async fn connect_with_tls(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) {
         let id = self.request_id();
         println!("[stream] process id {}", id);
-        let secured_stream = match tls.accept(stream).await {
+        let mut stream = match tls.accept(stream).await {
             Ok(v) => v,
             // TODO: Specify the error and response error message
             Err(err) => {
@@ -54,28 +53,27 @@ impl Wire for Proxy
         };
         
         println!("[stream] secured");
-        let mut line = ConnectedLine::new(id, secured_stream);
-        let req_ackk = match self.establish_connection(&mut line, &addr).await {
+        let req_ackk = match self.establish_connection(&mut stream, &addr).await {
             Ok(o) => o,
             Err(e) => {
                 // TODO: unfinished
                 if let io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput = e.kind() {
                     let mut err_response = [b'n', b'o'];
-                    let _ = line.write(&mut err_response).await;
+                    let _ = stream.write(&mut err_response).await;
                 }
                 return ;
             }
         };
-        let client = Client::new(line.conn_num, SocketInner::Secure(line.socket), addr, req_ackk);
+        let client = Client::new(id, SocketInner::Secure(stream), addr, req_ackk);
 
         self.broker.register(client).await;
     }
 
     async fn connect(&self, stream: TcpStream, addr: SocketAddr) {
+        let mut stream = stream;
         let id = self.request_id();
-        let mut line = ConnectedLine::new(id, stream);
-        let req_ackk = self.establish_connection(&mut line, &addr).await.unwrap();
-        let client = Client::new(line.conn_num, SocketInner::Plain(line.socket), addr, req_ackk);
+        let req_ackk = self.establish_connection(&mut stream, &addr).await.unwrap();
+        let client = Client::new(id, SocketInner::Plain(stream), addr, req_ackk);
         self.broker.register(client).await;
     }
 }

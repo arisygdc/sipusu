@@ -25,6 +25,8 @@ impl BrokerMediator {
         self.clients.insert(client).await
     }
 
+    // FIXME: wakeup connection
+    // - on the same ip can be different port
     pub async fn wakeup_exists(&self, clid: &str, addr: &SocketAddr) -> Option<ConnectionID> {
         let res = self.clients.find(clid, |c| {
             if c.addr.eq(addr) {
@@ -79,6 +81,7 @@ async fn observer_message<M, S>(provider: M, forwarder: S)
                 None => continue,
                 Some(dst) => dst[0].clone()
             };
+            // TODO: QoS
             forwarder.pubish(dst, packet).await.unwrap();
         }
         time::sleep(Duration::from_millis(10)).await;

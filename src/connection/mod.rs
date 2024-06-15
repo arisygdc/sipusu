@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 pub mod line;
 pub mod handler;
+mod errors;
 
 #[repr(transparent)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]

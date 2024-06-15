@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::{connection::ConnectionID, protocol::mqtt::{PublishPacket, Subscribe}};
+use crate::{connection::ConnectionID, protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, Subscribe}}};
 
 pub mod client;
 pub mod mediator;
@@ -16,7 +16,7 @@ mod provider;
 
 pub trait Event {
     fn enqueue_message(&self, msg: PublishPacket);
-    fn subscribe_topic(&self, sub: Subscribe, con_id: ConnectionID) -> impl std::future::Future<Output = ()> + Send;
+    fn subscribe_topics(&self, sub: Vec<Subscribe>, con_id: ConnectionID) -> impl std::future::Future<Output = Vec<SubAckResult>> + Send;
 }
 
 pub trait EventListener {

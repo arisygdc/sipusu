@@ -1,7 +1,7 @@
 use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
 use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::{Mutex, RwLock}, task::yield_now};
-use crate::{connection::{handler::SecuredStream, ConnectionID}, protocol::mqtt::{ConnectPacket, MqttClientPacket, Subscribe}};
+use crate::{connection::{handler::SecuredStream, ConnectionID}, protocol::{mqtt::{ConnectPacket, MqttClientPacket}, subscribe::{SubAckResult, SubscribeAck}}};
 
 use super::{Consumer, Event, EventListener};
 extern crate tokio;
@@ -224,7 +224,17 @@ impl EventListener for Clients {
                 MqttClientPacket::Publish(p) 
                     => event.enqueue_message(p),
                 MqttClientPacket::Subscribe(subs) 
-                    => subscribe_all(event, subs.list, cval.conid.clone()).await
+                    => {
+                        let result: Vec<SubAckResult> = event.subscribe_topics(subs.list, cval.conid.clone()).await;
+                        let response = SubscribeAck{ id: subs.id, subs_result: result };
+                        
+                        let pin = Pin::new(cval);
+                        let id = response.id;
+                        let result = pin.write(&mut response.serialize()).await;
+                        if let Err(e) = result {
+                            println!("[{}] {}", id, e.to_string());
+                        }
+                    }
             }
         }
     }
@@ -246,13 +256,5 @@ impl Consumer for Clients {
 impl Clone for Clients {
     fn clone(&self) -> Self {
         Self(self.0.clone())
-    }
-}
-
-async fn subscribe_all<E>(event: &E, subs: Vec<Subscribe>, conid: ConnectionID) 
-    where E: Event + Send + Sync 
-{
-    for sub in subs {
-        event.subscribe_topic(sub, conid.clone()).await;
     }
 }

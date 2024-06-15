@@ -74,7 +74,7 @@ pub struct SubscribeAck {
 }
 
 impl SubscribeAck {
-    fn serialize(&self) -> BytesMut {
+    pub fn serialize(&self) -> BytesMut {
         let mut buf = BytesMut::from([0x90, 0x03].as_slice());
         buf.put_u16(self.id);
         for ack in &self.subs_result {

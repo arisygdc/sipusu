@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::{connection::ConnectionID, protocol::mqtt::{PublishPacket, Subscribe}};
+use crate::{connection::ConnectionID, protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, SubWarranty, Subscribe}}};
 
 use super::{linked_list::List, trie::Trie, Event, Messanger};
 
@@ -30,7 +30,13 @@ impl Event for EventHandler {
         self.message_queue.append(msg)
     }
 
-    async fn subscribe_topic(&self, sub: Subscribe, con_id: ConnectionID) {
-        self.router.insert(&sub.topic, con_id).await
+    async fn subscribe_topics(&self, subs: Vec<Subscribe>, con_id: ConnectionID) -> Vec<SubAckResult> {
+        let mut res: Vec<SubAckResult> = Vec::with_capacity(subs.len());
+        for sub in subs {
+            self.router.insert(&sub.topic, con_id.clone()).await;
+            res.push(SubWarranty::try_from(sub.qos))
+        }
+
+        res
     }
 }

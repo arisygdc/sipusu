@@ -21,7 +21,7 @@ impl BrokerMediator {
 impl BrokerMediator {
     pub async fn register(&self, client: Client) {
         let client = client;
-        println!("[register] client {:?}", client);
+        println!("[register] client {:?}", client.conid);
         self.clients.insert(client).await
     }
 
@@ -56,7 +56,8 @@ async fn event_listener<L, E>(trig: L, event: E)
         E: Event + Send + Sync
 {
     loop { 
-        if trig.count_listener().await == 0 {
+        let len = trig.count_listener().await;
+        if len == 0 {
             time::sleep(Duration::from_millis(5)).await;
             continue;
         }
@@ -71,6 +72,7 @@ async fn observer_message<M, S>(provider: M, forwarder: S)
 {
     loop {
         if let Some(packet) = provider.dequeue_message() {
+            println!("routing");
             let to = provider.route(&packet.topic).await;
             println!("[to] {:?}", to);
             let dst = match to {

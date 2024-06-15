@@ -1,7 +1,7 @@
-use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
+use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{Duration, SystemTime, UNIX_EPOCH}};
 use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::{Mutex, RwLock}, task::yield_now};
-use crate::{connection::{handler::SecuredStream, ConnectionID}, protocol::{mqtt::{ConnectPacket, MqttClientPacket}, subscribe::{SubAckResult, SubscribeAck}}};
+use crate::{connection::{handler::SecuredStream, ConnectionID}, protocol::{mqtt::{ConnectPacket, MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}}};
 
 use super::{Consumer, Event, EventListener};
 extern crate tokio;
@@ -22,26 +22,20 @@ impl Socket {
     async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         let mut guard = self.inner.lock().await;
         match &mut *guard {
-            SocketInner::Plain(ref mut v) => {
-                let mut stream = unsafe { Pin::new_unchecked(v) };
-                stream.read(buf).await
-            }, SocketInner::Secure(ref mut v) => {
-                let mut stream = unsafe { Pin::new_unchecked(v) };
-                stream.read(buf).await
-            }
+            SocketInner::Plain(ref mut stream) 
+                => stream.read(buf).await, 
+            SocketInner::Secure(ref mut stream) 
+                => stream.read(buf).await
         }
     }
 
     async fn write_all(&self, buf: &mut [u8]) -> io::Result<()> {
         let mut guard = self.inner.lock().await;
         match &mut *guard {
-            SocketInner::Plain(ref mut v) => {
-                let mut stream = unsafe { Pin::new_unchecked(v) };
-                stream.write_all(buf).await
-            }, SocketInner::Secure(ref mut v) => {
-                let mut stream = unsafe { Pin::new_unchecked(v) };
-                stream.write_all(buf).await
-            }
+            SocketInner::Plain(ref mut stream) 
+                => stream.write_all(buf).await,
+            SocketInner::Secure(ref mut stream) 
+                => stream.write_all(buf).await
         }
     }
 }
@@ -162,9 +156,11 @@ impl Clients {
         clients.insert(found, new_cl);
     }
 
+    // TODO: Create Garbage collector
+    #[allow(dead_code)]
     pub async fn remove(&self, conid: ConnectionID) -> Result<(), String> {
         let mut clients = self.0.write().await;
-        let idx = clients.binary_search_by(|c| conid.cmp(&c.conid))
+        let idx = clients.binary_search_by(|c| c.conid.cmp(&conid))
             .map_err(|_| format!("cannot find conn num {}", conid))?;
         clients.remove(idx);
         Ok(())
@@ -194,13 +190,21 @@ impl EventListener for Clients {
                 if !cval.is_dead_time() {
                     continue;
                 }
-                
-                self.remove(cval.conid.clone())
-                    .await
-                    .unwrap();
             }
 
-            let n = match cval.listen(&mut buffer).await {
+            let read = tokio::time::timeout(
+                Duration::from_millis(10), 
+                cval.listen(&mut buffer)
+            ).await;
+
+            let read_result;
+            if let Ok(res) = read {
+                read_result = res;
+            } else {
+                continue;
+            }
+
+            let n = match read_result {
                 Ok(n) => n, 
                 Err(err) => { 
                     println!("err: {}", err.to_string());
@@ -222,7 +226,7 @@ impl EventListener for Clients {
             let packet = MqttClientPacket::deserialize(&mut buffer).unwrap();
             match packet {
                 MqttClientPacket::Publish(p) 
-                    => event.enqueue_message(p),
+                    => {event.enqueue_message(p); println!("enqueue message")},
                 MqttClientPacket::Subscribe(subs) 
                     => {
                         let result: Vec<SubAckResult> = event.subscribe_topics(subs.list, cval.conid.clone()).await;
@@ -240,16 +244,19 @@ impl EventListener for Clients {
     }
 
     async fn count_listener(&self) -> usize {
-        self.0.read().await.len()
+        let listener = self.0.read().await;
+        listener.len()
     }
 }
 
 impl Consumer for Clients {
-    async fn pubish(&self, con_id: ConnectionID, packet: crate::protocol::mqtt::PublishPacket) -> io::Result<()> {
+    async fn pubish(&self, con_id: ConnectionID, packet: PublishPacket) -> io::Result<()> {
         let clients = self.0.read().await;
-        let idx = clients.binary_search_by(|c| con_id.cmp(&c.conid)).unwrap();
+        let idx = clients.binary_search_by(|c| c.conid.cmp(&con_id)).unwrap();
         let mut buffer = packet.serialize();
-        clients[idx].write(&mut buffer).await
+        let client = &clients[idx];
+        println!("send to: {}", client.addr);
+        client.write(&mut buffer).await
     }
 }
 

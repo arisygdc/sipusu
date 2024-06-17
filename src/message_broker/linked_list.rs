@@ -31,18 +31,19 @@ impl<T> List<T> {
         
         loop {
             let head = self.head.load(Ordering::SeqCst);
-            let mut cur = head;
 
             if head.is_null() {
                 let compex = self
                     .head
                     .compare_exchange(ptr::null_mut(), new_node, Ordering::SeqCst, Ordering::SeqCst);
-    
-                if let Err(cnw) = compex { cur = cnw } 
-                else { return }
+                
+                match compex {
+                    Err(_) => continue,
+                    Ok(_) => return
+                }
             }
             
-            if unsafe { iter_exchange(cur, new_node) } {
+            if unsafe { iter_exchange(self.head.load(Ordering::SeqCst), new_node) } {
                 return;
             }
         }
@@ -88,15 +89,15 @@ impl<T: Default> List<T> {
 
 unsafe fn iter_exchange<T>(curptr: *mut AtmcNode<T>, excd: *mut AtmcNode<T>) -> bool {
     let mut curr = curptr;
-    while !(*curr).next.load(Ordering::SeqCst).is_null() {
-        curr = (*curr).next.load(Ordering::SeqCst);
+    while !(*curr).next.load(Ordering::Acquire).is_null() {
+        curr = (*curr).next.load(Ordering::Acquire);
     }
 
     let cmpx = (*curr).next.compare_exchange(
         ptr::null_mut(), 
         excd, 
-        Ordering::SeqCst, 
-        Ordering::SeqCst
+        Ordering::Release, 
+        Ordering::Relaxed
     );
 
     cmpx.is_ok()
@@ -109,23 +110,25 @@ mod tests {
 
     use super::List;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread",  worker_threads = 3)]
     async fn concurrent_insert() {
         let list: Arc<List<u8>> = Arc::new(List::new());
         async fn apeend(list: Arc<List<u8>>) {
+            println!("spawn task");
             for i in 0..6 {
+                print!("{}", i);
                 list.append(i);
             }
         }
     
-        let t1 = tokio::spawn(apeend(list.clone()));
-        let t2 = tokio::spawn(apeend(list.clone()));
-        let t3 = tokio::spawn(apeend(list.clone()));
+        let t1 = tokio::task::spawn(apeend(list.clone()));
+        let t2 = tokio::task::spawn(apeend(list.clone()));
+        let t3 = tokio::task::spawn(apeend(list.clone()));
 
         let _ = join!(t1, t2, t3);
         unsafe {
             let ppp = list.collects();
-            println!("{:?}", ppp);
+            // println!("{:?}", ppp);
             assert!(ppp.len() == 18)
         }
     }
@@ -140,9 +143,9 @@ mod tests {
             }
         }
 
-        let t1 = tokio::spawn(apeend(list.clone()));
-        let t2 = tokio::spawn(apeend(list.clone()));
-        let t3 = tokio::spawn(apeend(list.clone()));
+        let t1 = tokio::task::spawn(apeend(list.clone()));
+        let t2 = tokio::task::spawn(apeend(list.clone()));
+        let t3 = tokio::task::spawn(apeend(list.clone()));
 
         let _ = join!(t1, t2, t3);
         unsafe {
@@ -152,22 +155,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread",  worker_threads = 3)]
     async fn concurrent_take_first() {
         let list: Arc<List<u8>> = Arc::new(List::new());
         for i in 0..30 {
             list.append(i);
         }
         
-        async fn take(list: Arc<List<u8>>) {
+        async fn take(list: Arc<List<u8>>, id: u8) {
             for _ in 0..10 {
-                print!("{:?}, ", list.take_first())
+                println!("[{}] {:?}, ", id, list.take_first())
             }
         }
 
-        let t1 = tokio::spawn(take(list.clone()));
-        let t2 = tokio::spawn(take(list.clone()));
-        let t3 = tokio::spawn(take(list.clone()));
+        let t1 = tokio::spawn(take(list.clone(), 1));
+        let t2 = tokio::spawn(take(list.clone(), 2));
+        let t3 = tokio::spawn(take(list.clone(), 3));
 
         let _ = join!(t1, t2, t3);
     }

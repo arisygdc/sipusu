@@ -1,7 +1,6 @@
 
 #![allow(dead_code)]
 use bytes::{Buf, BytesMut};
-
 use super::{decode_binary_data, decode_utf8_string, RemainingLength};
 
 #[derive(Debug)]
@@ -181,7 +180,7 @@ fn  decode_properties(buffer: &mut BytesMut) -> Result<Properties, String> {
     Ok(properties)
 }
 
-fn decode_user_properties(buffer: &mut BytesMut) -> Result<(String, String), String> {
+pub(super) fn decode_user_properties(buffer: &mut BytesMut) -> Result<(String, String), String> {
     let key = decode_utf8_string(buffer)?;
     let value = decode_utf8_string(buffer)?;
     Ok((key, value))

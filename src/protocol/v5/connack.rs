@@ -2,11 +2,11 @@
 use bytes::{Buf, BufMut, BytesMut};
 
 use super::{
-    connect::decode_user_properties, 
-    encode_binary_data, 
-    encode_utf8_string, 
     decode_binary_data, 
-    decode_utf8_string, 
+    decode_string_pair, 
+    decode_utf8_string,
+    encode_binary_data,
+    encode_utf8_string,
     RemainingLength
 };
 
@@ -238,7 +238,7 @@ fn decode_properties(buffer: &mut BytesMut) -> Result<Option<Properties>, String
                 properties.reason_string = Some(value);
             }
             0x26 => {
-                let user_props= decode_user_properties(buffer)?;
+                let user_props= decode_string_pair(buffer)?;
                 match &mut properties.user_properties {
                     None => properties.user_properties = Some(vec![user_props]),
                     Some(v) => v.push(user_props)

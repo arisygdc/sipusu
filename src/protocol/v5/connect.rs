@@ -1,7 +1,7 @@
 
 #![allow(dead_code)]
 use bytes::{Buf, BytesMut};
-use super::{decode_binary_data, decode_utf8_string, RemainingLength};
+use super::{decode_binary_data, decode_string_pair, decode_utf8_string, RemainingLength};
 
 #[derive(Debug)]
 pub struct ConnectPacket {
@@ -20,8 +20,6 @@ pub struct ConnectPacket {
 
 #[derive(Debug)]
 pub struct Properties {
-    // Define properties according to the MQTT 5.0 standard.
-    // This is a simplified version. In practice, properties can be complex.
     session_expiry_interval: Option<u32>,
     receive_maximum: Option<u16>,
     maximum_packet_size: Option<u32>,
@@ -157,7 +155,7 @@ fn  decode_properties(buffer: &mut BytesMut) -> Result<Properties, String> {
             0x19 => properties.request_response_information = Some(buffer.get_u8()),
             0x17 => properties.request_problem_information = Some(buffer.get_u8()),
             0x26 => {
-                let user_props = decode_user_properties(buffer)?;
+                let user_props = decode_string_pair(buffer)?;
                 match &mut properties.user_properties {
                     None => properties.user_properties = Some(vec![user_props]),
                     Some(v) => v.push(user_props)
@@ -178,12 +176,6 @@ fn  decode_properties(buffer: &mut BytesMut) -> Result<Properties, String> {
     }
 
     Ok(properties)
-}
-
-pub(super) fn decode_user_properties(buffer: &mut BytesMut) -> Result<(String, String), String> {
-    let key = decode_utf8_string(buffer)?;
-    let value = decode_utf8_string(buffer)?;
-    Ok((key, value))
 }
 
 

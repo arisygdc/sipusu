@@ -93,3 +93,9 @@ fn encode_binary_data(buffer: &mut BytesMut, data: &[u8]) -> Result<(), String> 
 
     Ok(())
 }
+
+pub(super) fn decode_string_pair(buffer: &mut BytesMut) -> Result<(String, String), String> {
+    let key = decode_utf8_string(buffer)?;
+    let value = decode_utf8_string(buffer)?;
+    Ok((key, value))
+}

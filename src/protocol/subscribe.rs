@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 use bytes::{Buf, BufMut, BytesMut};
 
+use super::RemainingLength;
+
 #[derive(Debug)]
 pub struct SubscribePacket {
     pub id: u16,
@@ -98,8 +100,8 @@ impl SubscribePacket {
     }
 
     pub(super) fn skip_header(buffer: &mut BytesMut) -> Result<Self, &'static str> {
-        let remaining_length = Self::read_remaining_length(buffer)?;
-        *buffer = buffer.split_to(remaining_length);
+        let remaining_length = RemainingLength::decode(buffer)?;
+        *buffer = buffer.split_to(remaining_length as usize);
 
         let packet_identifier = buffer.get_u16();
 

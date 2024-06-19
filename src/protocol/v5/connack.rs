@@ -10,33 +10,35 @@ use super::{
     RemainingLength
 };
 
+#[derive(Default)]
 pub struct ConnackPacket {
-    session_present: bool,  
-    return_code: u8,
-    properties: Option<Properties>,
+    pub session_present: bool,  
+    pub return_code: u8,
+    pub properties: Option<Properties>,
 }
 
 // TODO: use map with rules
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub struct Properties {
-    session_expiry_interval: Option<u32>,
-    receive_maximum: Option<u16>,
-    maximum_qos: Option<u8>,
-    retain_available: Option<u8>,
-    maximum_packet_size: Option<u32>,
-    assigned_client_identifier: Option<String>,
-    topic_alias_maximum: Option<u16>,
-    reason_string: Option<String>,
-    user_properties: Option<Vec<(String, String)>>,
-    wildcard_subscription_available: Option<u8>,
-    subscription_identifier_available: Option<u8>,
-    shared_subscription_available: Option<u8>,
-    server_keep_alive: Option<u16>,
-    response_information: Option<String>,
-    server_reference: Option<String>,
-    authentication_method: Option<String>,
-    authentication_data: Option<Vec<u8>>,
+    pub session_expiry_interval: Option<u32>,
+    pub receive_maximum: Option<u16>,
+    pub maximum_qos: Option<u8>,
+    pub retain_available: Option<u8>,
+    pub maximum_packet_size: Option<u32>,
+    pub assigned_client_identifier: Option<String>,
+    pub topic_alias_maximum: Option<u16>,
+    pub reason_string: Option<String>,
+    pub user_properties: Option<Vec<(String, String)>>,
+    pub wildcard_subscription_available: Option<u8>,
+    pub subscription_identifier_available: Option<u8>,
+    pub shared_subscription_available: Option<u8>,
+    pub server_keep_alive: Option<u16>,
+    pub response_information: Option<String>,
+    pub server_reference: Option<String>,
+    pub authentication_method: Option<String>,
+    pub authentication_data: Option<Vec<u8>>,
 }
+
 
 impl ConnackPacket {
     #[cfg(test)]
@@ -198,25 +200,7 @@ fn decode_properties(buffer: &mut BytesMut) -> Result<Option<Properties>, String
         return Ok(None);
     }
 
-    let mut properties = Properties {
-        session_expiry_interval: None,
-        receive_maximum: None,
-        maximum_qos: None,
-        retain_available: None,
-        maximum_packet_size: None,
-        assigned_client_identifier: None,
-        topic_alias_maximum: None,
-        reason_string: None,
-        user_properties: None,
-        wildcard_subscription_available: None,
-        subscription_identifier_available: None,
-        shared_subscription_available: None,
-        server_keep_alive: None,
-        response_information: None,
-        server_reference: None,
-        authentication_method: None,
-        authentication_data: None,
-    };
+    let mut properties = Properties::default();
 
 
     while buffer.remaining() > 0 {

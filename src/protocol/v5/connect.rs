@@ -5,30 +5,30 @@ use super::{decode_binary_data, decode_string_pair, decode_utf8_string, Remainin
 
 #[derive(Debug)]
 pub struct ConnectPacket {
-    protocol_name: String,
-    protocol_level: u8,
-    connect_flags: u8,
-    keep_alive: u16,
-    properties: Option<Properties>,
-    client_id: String,
-    will_properties: Option<Properties>,
-    will_topic: Option<String>,
-    will_payload: Option<Vec<u8>>,
-    username: Option<String>,
-    password: Option<Vec<u8>>,
+    pub protocol_name: String,
+    pub protocol_level: u8,
+    pub connect_flags: u8,
+    pub keep_alive: u16,
+    pub properties: Option<Properties>,
+    pub client_id: String,
+    pub will_properties: Option<Properties>,
+    pub will_topic: Option<String>,
+    pub will_payload: Option<Vec<u8>>,
+    pub username: Option<String>,
+    pub password: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
 pub struct Properties {
-    session_expiry_interval: Option<u32>,
-    receive_maximum: Option<u16>,
-    maximum_packet_size: Option<u32>,
-    topic_alias_maximum: Option<u16>,
-    request_response_information: Option<u8>,
-    request_problem_information: Option<u8>,
-    user_properties: Option<Vec<(String, String)>>,
-    authentication_method: Option<String>,
-    authentication_data: Option<Vec<u8>>,
+    pub session_expiry_interval: Option<u32>,
+    pub receive_maximum: Option<u16>,
+    pub maximum_packet_size: Option<u32>,
+    pub topic_alias_maximum: Option<u16>,
+    pub request_response_information: Option<u8>,
+    pub request_problem_information: Option<u8>,
+    pub user_properties: Option<Vec<(String, String)>>,
+    pub authentication_method: Option<String>,
+    pub authentication_data: Option<Vec<u8>>,
 }
 
 impl ConnectPacket {
@@ -126,6 +126,11 @@ impl ConnectPacket {
             username,
             password,
         })
+    }
+
+    pub fn clean_start(&self) -> bool {
+        let cs = self.connect_flags & 0x20;
+        cs != 0
     }
 }
 

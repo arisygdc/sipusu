@@ -1,30 +1,122 @@
-use std::{io, mem, net::SocketAddr, pin::Pin, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{Duration, SystemTime, UNIX_EPOCH}};
-use bytes::BytesMut;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::{Mutex, RwLock}, task::yield_now};
-use crate::{connection::{handler::SecuredStream, ConnectionID}, protocol::{mqtt::{ConnectPacket, MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}}};
+use std::{io, mem, net::SocketAddr, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::Mutex};
+use crate::{connection::{line::SocketConnection, ConnectionID}, protocol::mqtt::ConnectPacket};
 
-use super::{Consumer, Event, EventListener};
 extern crate tokio;
 
+// TODO: Hash
+#[derive(Debug, Eq, Ord, Clone)]
+pub struct ClientID {
+    id: String,
+    hash: u32,
+}
 
-#[derive(Debug)]
-pub enum SocketInner {
-    Secure(SecuredStream), 
-    Plain(TcpStream)
+impl ClientID {
+    pub fn new(raw_clid: String) -> ClientID {
+        Self{
+            hash: Self::hash(&raw_clid),
+            id: raw_clid,
+        }
+    }
+
+    /// murmurhash 3
+    fn hash(raw_clid: &str) -> u32 {
+        const C1: u32 = 0xcc9e2d51;
+        const C2: u32 = 0x1b873593;
+        const SEED: u32 = 0;
+        
+        let mut hash = SEED;
+        let data = raw_clid.as_bytes();
+
+        let nblocks = data.len() / 4;
+
+        for i in 0..nblocks {
+            let mut k = u32::from_le_bytes([data[4 * i], data[4 * i + 1], data[4 * i + 2], data[4 * i + 3]]);
+            k = k.wrapping_mul(C1);
+            k = k.rotate_left(15);
+            k = k.wrapping_mul(C2);
+            
+            hash ^= k;
+            hash = hash.rotate_left(13);
+            hash = hash.wrapping_mul(5).wrapping_add(0xe6546b64);
+        }
+
+        let tail = &data[nblocks * 4..];
+        let mut k1 = 0;
+        match tail.len() {
+            3 => k1 ^= (tail[2] as u32) << 16,
+            2 => k1 ^= (tail[1] as u32) << 8,
+            1 => k1 ^= tail[0] as u32,
+            _ => (),
+        }
+        k1 = k1.wrapping_mul(C1);
+        k1 = k1.rotate_left(15);
+        k1 = k1.wrapping_mul(C2);
+        hash ^= k1;
+
+        hash ^= data.len() as u32;
+        hash ^= hash >> 16;
+        hash = hash.wrapping_mul(0x85ebca6b);
+        hash ^= hash >> 13;
+        hash = hash.wrapping_mul(0xc2b2ae35);
+        hash ^= hash >> 16;
+
+        hash
+    }
+}
+
+impl PartialEq for ClientID {
+    fn eq(&self, other: &Self) -> bool {
+        if self.id.len() != other.id.len() {
+            return false;
+        }
+        
+        self.hash == other.hash
+    }
+
+    fn ne(&self, other: &Self) -> bool {
+        if self.id.len() == other.id.len() {
+            return false;
+        }
+
+        self.hash != other.hash
+    }
+}
+
+impl PartialOrd for ClientID {
+    fn ge(&self, other: &Self) -> bool {
+        self.hash >= other.hash
+    }
+
+    fn gt(&self, other: &Self) -> bool {
+        self.hash > other.hash
+    }
+
+    fn le(&self, other: &Self) -> bool {
+        self.hash <= other.hash
+    }
+
+    fn lt(&self, other: &Self) -> bool {
+        self.hash < other.hash
+    }
+
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.hash.cmp(&other.hash))
+    }
 }
 
 #[derive(Debug)]
 pub struct Socket {
-    inner: Arc<Mutex<SocketInner>>
+    inner: Arc<Mutex<SocketConnection>>
 }
 
 impl Socket {
     async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         let mut guard = self.inner.lock().await;
         match &mut *guard {
-            SocketInner::Plain(ref mut stream) 
+            SocketConnection::Plain(ref mut stream) 
                 => stream.read(buf).await, 
-            SocketInner::Secure(ref mut stream) 
+            SocketConnection::Secure(ref mut stream) 
                 => stream.read(buf).await
         }
     }
@@ -32,11 +124,15 @@ impl Socket {
     async fn write_all(&self, buf: &mut [u8]) -> io::Result<()> {
         let mut guard = self.inner.lock().await;
         match &mut *guard {
-            SocketInner::Plain(ref mut stream) 
+            SocketConnection::Plain(ref mut stream) 
                 => stream.write_all(buf).await,
-            SocketInner::Secure(ref mut stream) 
+            SocketConnection::Secure(ref mut stream) 
                 => stream.write_all(buf).await
         }
+    }
+
+    fn new(socket: SocketConnection) -> Self {
+        Self { inner: Arc::new(Mutex::new(socket)) }
     }
 }
 
@@ -44,20 +140,20 @@ impl Socket {
 #[allow(dead_code)]
 pub struct Client {
     pub(super) conid: ConnectionID,
+    pub(super) clid: ClientID,
     pub(super) alive: AtomicBool,
-    socket: Socket,
     pub(super) addr: SocketAddr,
+    socket: Socket,
     dead_on: AtomicU64,
     protocol_name: String,
     protocol_level: u8,
-    pub(super) client_id: String,
     keep_alive: u16,
 }
 
 impl Client {
     pub fn new(
         conid: ConnectionID,
-        socket: SocketInner,
+        socket: SocketConnection,
         addr: SocketAddr, 
         conn_pkt: ConnectPacket
     ) -> Self {
@@ -68,7 +164,7 @@ impl Client {
             addr,
             socket,
             dead_on: AtomicU64::new(0),
-            client_id: mem::take(&mut pkt.client_id),
+            clid: ClientID::new(mem::take(&mut pkt.client_id)),
             alive: AtomicBool::new(true),
             keep_alive: pkt.keep_alive,
             protocol_level: pkt.protocol_level,
@@ -109,6 +205,26 @@ impl Client {
         self.dead_on.store(untime, Ordering::Release)
     }
 
+
+    pub fn restore_connection(&mut self, bucket: &mut Option<SocketConnection>) -> Result<(), String> {
+        let res = self.alive.compare_exchange_weak(
+            false, 
+            true,
+            Ordering::Acquire, 
+            Ordering::Relaxed
+        );
+
+        if res.is_err() {
+            return Err("connection still alive".to_string());
+        }
+
+        match bucket.take() {
+            Some(s) => self.socket = Socket::new(s),
+            None => panic!("empty connection")
+        }
+        Ok(())
+    }
+
     #[inline]
     pub(super) fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
@@ -126,142 +242,5 @@ impl Client {
             .unwrap()
             .as_secs();
         return untime > dtime;
-    }
-}
-
-type MutexClients = RwLock<Vec<Client>>;
-
-pub struct Clients(Arc<MutexClients>);
-
-impl Clients {
-    pub fn new() -> Self {
-        Self(Arc::new(RwLock::new(Vec::new())))
-    }
-    
-    /// insert sort by conn number
-    pub async fn insert(&self, new_cl: Client) {
-        let mut clients = self.0.write().await;
-
-        let mut found = clients.len();
-        for (i, cval) in clients.iter().enumerate() {
-            match new_cl.conid.cmp(&cval.conid) {
-                std::cmp::Ordering::Equal => panic!("kok iso"),
-                std::cmp::Ordering::Greater => continue,
-                std::cmp::Ordering::Less => ()
-            }
-
-            found = i;
-            break;
-        }
-        clients.insert(found, new_cl);
-    }
-
-    // TODO: Create Garbage collector
-    #[allow(dead_code)]
-    pub async fn remove(&self, conid: ConnectionID) -> Result<(), String> {
-        let mut clients = self.0.write().await;
-        let idx = clients.binary_search_by(|c| c.conid.cmp(&conid))
-            .map_err(|_| format!("cannot find conn num {}", conid))?;
-        clients.remove(idx);
-        Ok(())
-    }
-
-    pub async fn find<R>(&self, clid: &str, f: impl FnOnce(&Client) -> R) -> Option<R> {
-        let clients = self.0.read().await;
-        for client in clients.iter() {
-            if client.client_id.eq(clid) {
-                return Some(f(client));
-            }
-        }
-        None
-    }
-}
-
-impl EventListener for Clients {
-    async fn listen_all<E>(&self, event: &E) 
-        where E: Event + Send + Sync 
-    {
-        let listeners = self.0.read().await;
-        
-        for cval in listeners.iter() {
-            let mut buffer = BytesMut::zeroed(512);
-            if !cval.is_alive() {
-                yield_now().await;
-                if !cval.is_dead_time() {
-                    continue;
-                }
-            }
-
-            let read = tokio::time::timeout(
-                Duration::from_millis(10), 
-                cval.listen(&mut buffer)
-            ).await;
-
-            let read_result;
-            if let Ok(res) = read {
-                read_result = res;
-            } else {
-                continue;
-            }
-
-            let n = match read_result {
-                Ok(n) => n, 
-                Err(err) => { 
-                    println!("err: {}", err.to_string());
-                    continue;
-                }
-            };
-
-            if n == 0 {
-                yield_now().await;
-
-                if cval.is_alive() {
-                    cval.set_alive(false); 
-                }
-                continue;
-            }
-
-            let mut buffer = buffer.split_to(n);
-            
-            let packet = MqttClientPacket::deserialize(&mut buffer).unwrap();
-            match packet {
-                MqttClientPacket::Publish(p) 
-                    => {event.enqueue_message(p); println!("enqueue message")},
-                MqttClientPacket::Subscribe(subs) 
-                    => {
-                        let result: Vec<SubAckResult> = event.subscribe_topics(subs.list, cval.conid.clone()).await;
-                        let response = SubscribeAck{ id: subs.id, subs_result: result };
-                        
-                        let pin = Pin::new(cval);
-                        let id = response.id;
-                        let result = pin.write(&mut response.serialize()).await;
-                        if let Err(e) = result {
-                            println!("[{}] {}", id, e.to_string());
-                        }
-                    }
-            }
-        }
-    }
-
-    async fn count_listener(&self) -> usize {
-        let listener = self.0.read().await;
-        listener.len()
-    }
-}
-
-impl Consumer for Clients {
-    async fn pubish(&self, con_id: ConnectionID, packet: PublishPacket) -> io::Result<()> {
-        let clients = self.0.read().await;
-        let idx = clients.binary_search_by(|c| c.conid.cmp(&con_id)).unwrap();
-        let mut buffer = packet.serialize();
-        let client = &clients[idx];
-        println!("send to: {}", client.addr);
-        client.write(&mut buffer).await
-    }
-}
-
-impl Clone for Clients {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }

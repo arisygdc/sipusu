@@ -1,12 +1,18 @@
 use std::io;
-
 use crate::{connection::ConnectionID, protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, Subscribe}}};
 
 pub mod client;
+pub mod clients;
 pub mod mediator;
 mod trie;
 mod linked_list;
 mod provider;
+
+pub const MAX_QOS: u8 = 2;
+pub const WILDCARD_SUPPORT: bool = false;
+pub const SUBS_ID_SUPPORT: bool = false;
+pub const SHARED_SUBS_SUPPORT: bool = false;
+
 // producer
 // - listener(event)
 

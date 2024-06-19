@@ -1,7 +1,7 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{task::JoinHandle, time};
-use crate::{connection::ConnectionID, protocol::mqtt::PublishPacket};
-use super::{client::{Client, Clients}, linked_list::List, provider::EventHandler, trie::Trie, Consumer, Event, EventListener, Messanger};
+use crate::{connection::{line::SocketConnection, ConnectionID}, protocol::mqtt::PublishPacket};
+use super::{client::{Client, ClientID}, clients::Clients, linked_list::List, provider::EventHandler, trie::Trie, Consumer, Event, EventListener, Messanger};
 
 pub struct BrokerMediator {
     clients: Clients,
@@ -25,17 +25,14 @@ impl BrokerMediator {
         self.clients.insert(client).await
     }
 
-    // FIXME: wakeup connection
-    // - on the same ip can be different port
-    pub async fn wakeup_exists(&self, clid: &str, addr: &SocketAddr) -> Option<ConnectionID> {
-        let res = self.clients.find(clid, |c| {
-            if c.addr.eq(addr) {
-                c.set_alive(true);
-                return Some(c.conid.clone());
-            }
-                
-            None
-        }).await?;
+    /// wakeup session
+    /// replacing old socket with incoming socket connection 
+    pub async fn try_restore_connection(&self, clid: &ClientID, bucket: &mut Option<SocketConnection>) -> Result<(), String> {
+        let res = match self.clients.search_mut_client(clid, |c| c.restore_connection(bucket))
+            .await {
+                None => return Err(String::from("Not found")),
+                Some(res) => res
+            };
         res
     }
 

@@ -180,8 +180,8 @@ impl Client {
             clid,
             dead_on: AtomicU64::new(0),
             alive: AtomicBool::new(true),
-            keep_alive: keep_alive,
-            protocol_level: protocol_level,
+            keep_alive,
+            protocol_level,
         }
     }
 
@@ -249,10 +249,15 @@ impl Client {
             return false;
         }
 
-        let untime = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let untime = now();
         return untime > dtime;
     }
+}
+
+#[inline]
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }

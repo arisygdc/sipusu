@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
-use tokio::{task::JoinHandle, time};
-use crate::{connection::line::SocketConnection, protocol::mqtt::PublishPacket};
+use tokio::{io, task::JoinHandle, time};
+use crate::{connection::line::SocketConnection, protocol::{mqtt::PublishPacket, v5::connack::ConnackPacket}};
 use super::{client::{Client, ClientID}, clients::Clients, linked_list::List, provider::EventHandler, trie::Trie, Consumer, Event, EventListener, Messanger};
 
 pub struct BrokerMediator {
@@ -19,10 +19,20 @@ impl BrokerMediator {
 }
 
 impl BrokerMediator {
-    pub async fn register(&self, client: Client) {
-        let client = client;
-        println!("[register] client {:?}", client.conid);
-        self.clients.insert(client).await
+    pub async fn register(&self, new_cl: Client, ack_packet: ConnackPacket) -> io::Result<()>{
+        {
+            let mut buffer = ack_packet.encode()
+                .map_err(
+                    |op| 
+                    io::Error::new(
+                    io::ErrorKind::InvalidData, 
+                    op.to_string())
+                )?;
+            new_cl.write(&mut buffer).await?;
+        }
+        println!("[register] client {:?}", new_cl.conid);
+        self.clients.insert(new_cl).await;
+        Ok(())
     }
 
     /// wakeup session

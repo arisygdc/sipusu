@@ -1,5 +1,5 @@
 use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
-use super::{errors::ConnError, line::{MqttHandshake, SocketConnection}, ConnectionID};
+use super::{errors::ConnError, line::{MqttConnectRequest, SocketConnection}, ConnectionID};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 use crate::{message_broker::{client::{Client, ClientID}, mediator::BrokerMediator}, protocol::v5::connack::ConnackPacket, server::Wire};
@@ -17,9 +17,9 @@ impl Proxy {
     }
     
     async fn establish_connection(&self, connid: ConnectionID, mut conn: SocketConnection, addr: SocketAddr) -> Result<(), ConnError> {
-        let req_ack = conn.read_ack().await?;
+        let req_ack = conn.read_request().await?;
         let connack_packet = ConnackPacket::default();
-        
+
         let clid = ClientID::new(req_ack.client_id.clone());
         self.start_session(
             connack_packet,
@@ -34,6 +34,7 @@ impl Proxy {
         Ok(())
     }
 
+    // TODO: add some mechanism to prevent race condition
     async fn start_session(
         &self, 
         mut response: ConnackPacket,
@@ -49,11 +50,14 @@ impl Proxy {
         let session_exists = self.broker.session_exists(&clid).await;
         if !clean_start && session_exists {
             let mut bucket = Some(conn);
+            // TODO: change client state from incoming request
+            // TODO: response ack
             let restore_feedback = self.broker.try_restore_connection(&clid, &mut bucket).await;
             if restore_feedback.is_ok() {
                 response.session_present = false;
                 let _enc_res = response.encode().unwrap();
-                return  Ok(());
+                unimplemented!();
+                // return  Ok(());
             }
             
             conn = bucket
@@ -75,7 +79,9 @@ impl Proxy {
             protocol_level
         );
 
-        self.broker.register(client).await;
+        self.broker.register(client, response)
+            .await
+            .unwrap();
         Ok(())
     }
 

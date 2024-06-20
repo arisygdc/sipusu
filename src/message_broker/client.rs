@@ -4,7 +4,6 @@ use crate::connection::{line::SocketConnection, ConnectionID};
 
 extern crate tokio;
 
-// TODO: Hash
 #[derive(Debug, Eq, Ord, Clone)]
 pub struct ClientID {
     id: String,
@@ -218,7 +217,6 @@ impl Client {
 
         self.dead_on.store(untime, Ordering::Release)
     }
-
 
     pub fn restore_connection(&mut self, bucket: &mut Option<SocketConnection>) -> Result<(), String> {
         let res = self.alive.compare_exchange_weak(

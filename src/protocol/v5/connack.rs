@@ -79,7 +79,7 @@ impl ConnackPacket {
         })
     }
 
-    pub fn encode(&self, buffer: &mut BytesMut) -> Result<(), String> {
+    pub fn encode(&self) -> Result<BytesMut, String> {
         // Variable header
         let mut buf_vrheader = [0; 2];
         let session_present_flag = self.session_present as u8;
@@ -170,12 +170,14 @@ impl ConnackPacket {
         // Properties remaining length
         let (prop_remleng, plsize) = RemainingLength::encode(buf_prop.len() as u32)?;
         let (prop_remleng, _) = prop_remleng.split_at(plsize);
-
-
+        
+        
         // Packet remaining length
-        let (packet_remleng, rsize) = RemainingLength::encode((buf_prop.len() + buf_vrheader.len() + prop_remleng.len()) as u32)?;
+        let remaining_leng = buf_prop.len() + buf_vrheader.len() + prop_remleng.len();
+        let (packet_remleng, rsize) = RemainingLength::encode(remaining_leng as u32)?;
         let (packet_remleng, _) = packet_remleng.split_at(rsize);
         
+        let mut buffer = BytesMut::with_capacity(remaining_leng + 10);
         // Fixed header
         buffer.put_u8(0x20); // Packet type and flags
 
@@ -186,7 +188,7 @@ impl ConnackPacket {
         buffer.put(buf_prop);
 
 
-        Ok(())
+        Ok(buffer)
     }
 }
 
@@ -289,8 +291,7 @@ mod tests {
             properties: Some(properties),
         };
 
-        let mut buffer = BytesMut::new();
-        packet.encode(&mut buffer).unwrap();
+        let mut buffer = packet.encode().unwrap();
         let mut cbuf = buffer.clone();
 
         assert_eq!(cbuf.get_u8(), 0x20); // Packet type and flags

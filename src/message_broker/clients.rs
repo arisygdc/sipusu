@@ -51,11 +51,6 @@ impl Clients {
         let r = f(&mut clients[idx]);
         Some(r)
     }
-
-    pub async fn search_clid_mut<R>(&self, raw_clid: &str, f: impl FnOnce(&mut Client) -> R) -> Option<R> {
-        let clid = ClientID::new(raw_clid.to_owned());
-        self.search_mut_client(&clid, f).await
-    }
 }
 
 impl EventListener for Clients {

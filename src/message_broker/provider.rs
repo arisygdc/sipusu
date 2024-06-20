@@ -1,16 +1,16 @@
 use std::sync::Arc;
-use crate::{connection::ConnectionID, protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, SubWarranty, Subscribe}}};
+use crate::protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, SubWarranty, Subscribe}};
 
-use super::{linked_list::List, trie::Trie, Event, Messanger};
+use super::{client::ClientID, linked_list::List, trie::Trie, Event, Messanger};
 
 #[derive(Clone)]
 pub struct EventHandler {
     message_queue: Arc<List<PublishPacket>>,
-    router: Arc<Trie<ConnectionID>>
+    router: Arc<Trie<ClientID>>
 }
 
 impl EventHandler {
-    pub fn from(message_queue: Arc<List<PublishPacket>>, router: Arc<Trie<ConnectionID>>) -> Self {
+    pub fn from(message_queue: Arc<List<PublishPacket>>, router: Arc<Trie<ClientID>>) -> Self {
         Self { message_queue, router }
     }
 }
@@ -20,7 +20,7 @@ impl Messanger for EventHandler {
         self.message_queue.take_first()
     }
 
-    async fn route(&self, topic: &str) -> Option<Vec<ConnectionID>> {
+    async fn route(&self, topic: &str) -> Option<Vec<ClientID>> {
         self.router.get(topic).await
     }
 }
@@ -30,7 +30,7 @@ impl Event for EventHandler {
         self.message_queue.append(msg)
     }
 
-    async fn subscribe_topics(&self, subs: Vec<Subscribe>, con_id: ConnectionID) -> Vec<SubAckResult> {
+    async fn subscribe_topics(&self, subs: Vec<Subscribe>, con_id: ClientID) -> Vec<SubAckResult> {
         let mut res: Vec<SubAckResult> = Vec::with_capacity(subs.len());
         for sub in subs {
             self.router.insert(&sub.topic, con_id.clone()).await;

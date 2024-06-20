@@ -1,12 +1,12 @@
 use std::{sync::Arc, time::Duration};
 use tokio::{task::JoinHandle, time};
-use crate::{connection::{line::SocketConnection, ConnectionID}, protocol::mqtt::PublishPacket};
+use crate::{connection::line::SocketConnection, protocol::mqtt::PublishPacket};
 use super::{client::{Client, ClientID}, clients::Clients, linked_list::List, provider::EventHandler, trie::Trie, Consumer, Event, EventListener, Messanger};
 
 pub struct BrokerMediator {
     clients: Clients,
     message_queue: Arc<List<PublishPacket>>,
-    router: Arc<Trie<ConnectionID>>,
+    router: Arc<Trie<ClientID>>,
 }
 
 impl BrokerMediator {
@@ -34,6 +34,14 @@ impl BrokerMediator {
                 Some(res) => res
             };
         res
+    }
+
+    pub async fn session_exists(&self, clid: &ClientID) -> bool {
+        self.clients.session_exists(clid).await
+    }
+
+    pub async fn remove(&self, clid: &ClientID) -> Result<(), String> {
+        self.clients.remove(clid).await
     }
 
     pub fn join_handle(&mut self) -> (JoinHandle<()>, JoinHandle<()>) {

@@ -2,14 +2,15 @@ use std::time::Duration;
 use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, time};
 use tokio_rustls::server::TlsStream;
-use crate::{message_broker, protocol::v5::{connack, connect::ConnectPacket}};
+use crate::protocol::v5::{connack::ConnackPacket, connect::ConnectPacket};  
 use super::errors::{ConnError, ErrorKind};
 
 pub type SecuredStream = TlsStream<TcpStream>;
+
 pub(super) trait MqttHandshake {
     async fn read_ack<'a>(&'a mut self) -> Result<ConnectPacket, ConnError>;
     // async fn validate_request(&self, packet: ConnectPacket) -> Result<(), String>;
-    async fn connack<'a>(&'a mut self, flag: SessionFlag, code: u8) -> Result<(), ConnError>;
+    async fn connack<'a>(&'a mut self, ack: ConnackPacket) -> Result<(), ConnError>;
 }
 
 #[derive(Debug)]
@@ -47,84 +48,22 @@ impl MqttHandshake for SocketConnection {
 
             buffer.split_to(read_len)
         };
+
         let packet = ConnectPacket::decode(&mut buffer)
             .map_err(|e| ConnError::new(ErrorKind::InvalidData, Some(String::from(e)))
         )?;
         Ok(packet)
     }
 
-    async fn connack<'a>(&'a mut self, flag: SessionFlag, code: u8) -> Result<(), ConnError> {
-        let session = match flag {
-            SessionFlag::New => 0x0u8,
-            SessionFlag::Preset => 0x1u8
-        };
+    async fn connack<'a>(&'a mut self, ack: ConnackPacket) -> Result<(), ConnError> {
+        let mut packet = ack.encode()
+            .map_err(|e| ConnError::new(ErrorKind::InvalidData, Some(e)))?;
 
-        let mut connack = [0x20u8, 0x02u8, session, code];
-        match self.write_all(connack.as_mut_slice()).await {
+        match self.write_all(&mut packet).await {
             Err(err) => Err(ConnError::new(ErrorKind::ConnectionAborted, Some(err.to_string()))),
             Ok(empty) => Ok(empty)
         }
     }
-}
-
-pub trait ConnHandshake: AsyncReadExt + AsyncWriteExt + Unpin + Send {
-    async fn read_ack<'a>(&'a mut self) -> Result<ConnectPacket, ConnError> {
-        let mut buffer = {
-            let mut buffer = BytesMut::zeroed(256);
-            let read_len = read_timeout(self, &mut buffer, 1).await?;
-            buffer.split_to(read_len)
-        };
-        let packet = ConnectPacket::decode(&mut buffer)
-            .map_err(|e| ConnError::new(ErrorKind::InvalidData, Some(String::from(e)))
-        )?;
-        Ok(packet)
-    }
-
-    async fn validate_request(&self, packet: ConnectPacket) -> Result<(), String> {
-        let prop = match packet.properties {
-            None => None,
-            Some(value) => {Some(
-                connack::Properties {
-                    session_expiry_interval: value.session_expiry_interval,
-                    receive_maximum: value.receive_maximum,
-                    maximum_qos: Some(message_broker::MAX_QOS),
-                    retain_available: None,
-                    maximum_packet_size: value.maximum_packet_size,
-                    assigned_client_identifier: Some(packet.client_id),
-                    topic_alias_maximum: value.topic_alias_maximum,
-                    // TODO
-                    reason_string: Some(String::from("value")),
-                    user_properties: value.user_properties,
-                    wildcard_subscription_available: Some(message_broker::WILDCARD_SUPPORT as u8),
-                    subscription_identifier_available: Some(message_broker::SUBS_ID_SUPPORT as u8),
-                    shared_subscription_available: Some(message_broker::SHARED_SUBS_SUPPORT as u8),
-                    server_keep_alive: Some(0),
-                    response_information: None,
-                    server_reference: None,
-                    authentication_data: None,
-                    authentication_method: None
-                }
-            )}
-        };
-        Ok(())
-    }
-
-    async fn connack<'a>(&'a mut self, flag: SessionFlag, code: u8) -> Result<usize, ConnError> {
-        let session = match flag {
-            SessionFlag::New => 0x0u8,
-            SessionFlag::Preset => 0x1u8
-        };
-
-        let mut connack = [0x20u8, 0x02u8, session, code];
-        match self.write(connack.as_mut_slice()).await {
-            Err(err) => Err(ConnError::new(ErrorKind::ConnectionAborted, Some(err.to_string()))),
-            Ok(len) => Ok(len)
-        }
-    }
-}
-
-pub trait IntoConnection {
-    fn into_conn(self) -> SocketConnection;
 }
 
 async fn read_timeout<'a, Read>(reader: &'a mut Read, buffer: &'a mut BytesMut, timeout_sec: u8) -> Result<usize, ConnError> 
@@ -146,11 +85,3 @@ async fn read_timeout<'a, Read>(reader: &'a mut Read, buffer: &'a mut BytesMut, 
         ))
     }
 }
-
-pub enum SessionFlag {
-    // Resume session
-    Preset,
-    // Create new session
-    New
-}
-

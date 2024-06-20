@@ -1,7 +1,7 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
 use bytes::BytesMut;
 use tokio::{io, sync::RwLock, task::yield_now};
-use crate::{connection::ConnectionID, protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}}};
+use crate::protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}};
 use super::{client::{Client, ClientID}, Consumer, Event, EventListener};
 
 type MutexClients = RwLock<Vec<Client>>;
@@ -33,10 +33,10 @@ impl Clients {
 
     // TODO: Create Garbage collector
     #[allow(dead_code)]
-    pub async fn remove(&self, conid: ConnectionID) -> Result<(), String> {
+    pub async fn remove(&self, clid: &ClientID) -> Result<(), String> {
         let mut clients = self.0.write().await;
-        let idx = clients.binary_search_by(|c| c.conid.cmp(&conid))
-            .map_err(|_| format!("cannot find conn num {}", conid))?;
+        let idx = clients.binary_search_by(|c| c.clid.cmp(&clid))
+            .map_err(|_| format!("cannot find conn num {}", clid))?;
         clients.remove(idx);
         Ok(())
     }
@@ -51,6 +51,12 @@ impl Clients {
         let r = f(&mut clients[idx]);
         Some(r)
     }
+
+    pub async fn session_exists(&self, clid: &ClientID) -> bool {
+        let clients = self.0.read().await;
+        clients.binary_search_by(|c| c.clid.cmp(clid)).is_ok()
+    }
+
 }
 
 impl EventListener for Clients {
@@ -105,7 +111,7 @@ impl EventListener for Clients {
                     => {event.enqueue_message(p); println!("enqueue message")},
                 MqttClientPacket::Subscribe(subs) 
                     => {
-                        let result: Vec<SubAckResult> = event.subscribe_topics(subs.list, cval.conid.clone()).await;
+                        let result: Vec<SubAckResult> = event.subscribe_topics(subs.list, cval.clid.clone()).await;
                         let response = SubscribeAck{ id: subs.id, subs_result: result };
                         
                         let pin = Pin::new(cval);
@@ -126,9 +132,9 @@ impl EventListener for Clients {
 }
 
 impl Consumer for Clients {
-    async fn pubish(&self, con_id: ConnectionID, packet: PublishPacket) -> io::Result<()> {
+    async fn pubish(&self, clid: ClientID, packet: PublishPacket) -> io::Result<()> {
         let clients = self.0.read().await;
-        let idx = clients.binary_search_by(|c| c.conid.cmp(&con_id)).unwrap();
+        let idx = clients.binary_search_by(|c| c.clid.cmp(&clid)).unwrap();
         let mut buffer = packet.serialize();
         let client = &clients[idx];
         println!("send to: {}", client.addr);

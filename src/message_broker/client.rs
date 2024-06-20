@@ -1,6 +1,6 @@
-use std::{io, mem, net::SocketAddr, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
+use std::{fmt::Display, io, net::SocketAddr, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::Mutex};
-use crate::{connection::{line::SocketConnection, ConnectionID}, protocol::mqtt::ConnectPacket};
+use crate::connection::{line::SocketConnection, ConnectionID};
 
 extern crate tokio;
 
@@ -62,6 +62,12 @@ impl ClientID {
         hash ^= hash >> 16;
 
         hash
+    }
+}
+
+impl Display for ClientID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.id)
     }
 }
 
@@ -145,30 +151,38 @@ pub struct Client {
     pub(super) addr: SocketAddr,
     socket: Socket,
     dead_on: AtomicU64,
-    protocol_name: String,
     protocol_level: u8,
     keep_alive: u16,
 }
+
+// pub struct UpdateClient {
+//     pub conid: Option<ConnectionID>,
+//     pub clid: Option<ClientID>,
+//     pub addr: Option<SocketAddr>,
+//     pub socket: Option<Socket>,
+//     pub protocol_level: Option<u8>,
+//     pub keep_alive: Option<u16>,
+// }
 
 impl Client {
     pub fn new(
         conid: ConnectionID,
         socket: SocketConnection,
-        addr: SocketAddr, 
-        conn_pkt: ConnectPacket
+        addr: SocketAddr,
+        clid: ClientID,
+        keep_alive: u16,
+        protocol_level: u8
     ) -> Self {
-        let mut pkt = conn_pkt;
         let socket = Socket { inner: Arc::new(Mutex::new(socket)) };
         Self {
             conid,
             addr,
             socket,
+            clid,
             dead_on: AtomicU64::new(0),
-            clid: ClientID::new(mem::take(&mut pkt.client_id)),
             alive: AtomicBool::new(true),
-            keep_alive: pkt.keep_alive,
-            protocol_level: pkt.protocol_level,
-            protocol_name: pkt.protocol_name
+            keep_alive: keep_alive,
+            protocol_level: protocol_level,
         }
     }
 

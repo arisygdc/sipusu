@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
 use super::{errors::ConnError, line::{MqttHandshake, SocketConnection}, ConnectionID};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
-use crate::{message_broker::{client::ClientID, mediator::BrokerMediator}, protocol::v5::{connack::ConnackPacket, connect::ConnectPacket}, server::Wire};
+use crate::{message_broker::{client::{Client, ClientID}, mediator::BrokerMediator}, protocol::v5::connack::ConnackPacket, server::Wire};
 
 #[allow(dead_code)]
 pub struct Proxy {
@@ -16,18 +16,67 @@ impl Proxy {
         Ok(Self { access_total, broker })
     }
     
-    async fn establish_connection(&self, mut conn: SocketConnection, addr: SocketAddr) -> Result<ConnectPacket, ConnError> {
+    async fn establish_connection(&self, connid: ConnectionID, mut conn: SocketConnection, addr: SocketAddr) -> Result<(), ConnError> {
         let req_ack = conn.read_ack().await?;
-        let mut connack_packet = ConnackPacket::default();
+        let connack_packet = ConnackPacket::default();
+        
         let clid = ClientID::new(req_ack.client_id.clone());
-        if !req_ack.clean_start() {
+        self.start_session(
+            connack_packet,
+            connid,
+            clid, 
+            req_ack.clean_start(), 
+            conn,
+            addr, 
+            req_ack.keep_alive,
+            req_ack.protocol_level
+        ).await.unwrap();
+        Ok(())
+    }
+
+    async fn start_session(
+        &self, 
+        mut response: ConnackPacket,
+        connid: ConnectionID,
+        clid: ClientID,
+        clean_start: bool,
+        conn: SocketConnection, 
+        addr: SocketAddr,
+        keep_alive: u16,
+        protocol_level: u8
+    ) -> Result<(), String> {
+        let mut conn = conn;
+        let session_exists = self.broker.session_exists(&clid).await;
+        if !clean_start && session_exists {
             let mut bucket = Some(conn);
-            connack_packet.session_present = match self.broker.try_restore_connection(&clid, &mut bucket).await {
-                Ok(_) => true,
-                Err(_) => false
-            };
-        };
-        Ok(req_ack)
+            let restore_feedback = self.broker.try_restore_connection(&clid, &mut bucket).await;
+            if restore_feedback.is_ok() {
+                response.session_present = false;
+                let _enc_res = response.encode().unwrap();
+                return  Ok(());
+            }
+            
+            conn = bucket
+                .take()
+                .unwrap();
+        }
+        
+
+        if session_exists {
+            self.broker.remove(&clid).await.unwrap();
+        }
+
+        let client = Client::new(
+            connid, 
+            conn, 
+            addr, 
+            clid, 
+            keep_alive,
+            protocol_level
+        );
+
+        self.broker.register(client).await;
+        Ok(())
     }
 
     fn request_id(&self) -> ConnectionID {
@@ -51,15 +100,15 @@ impl Wire for Proxy {
         
         println!("[stream] secured");
         let stream = SocketConnection::Secure(stream);
-        let _ = self.establish_connection(stream, addr).await;
-
-        // errorcon_action(id, stream, err)
+        let _ = self.establish_connection(id, stream, addr).await;
     }
 
     async fn connect(&self, stream: TcpStream, addr: SocketAddr) {
+        let id = self.request_id();
+        println!("[stream] process id {}", id);
         let stream = stream;
         let stream = SocketConnection::Plain(stream);
-        let _ = self.establish_connection(stream, addr).await;
+        let _ = self.establish_connection(id, stream, addr).await;
     }
 }
 

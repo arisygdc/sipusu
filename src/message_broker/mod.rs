@@ -1,5 +1,7 @@
 use std::io;
-use crate::{connection::ConnectionID, protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, Subscribe}}};
+use client::ClientID;
+
+use crate::protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, Subscribe}};
 
 pub mod client;
 pub mod clients;
@@ -22,7 +24,7 @@ pub const SHARED_SUBS_SUPPORT: bool = false;
 
 pub trait Event {
     fn enqueue_message(&self, msg: PublishPacket);
-    fn subscribe_topics(&self, sub: Vec<Subscribe>, con_id: ConnectionID) -> impl std::future::Future<Output = Vec<SubAckResult>> + Send;
+    fn subscribe_topics(&self, sub: Vec<Subscribe>, con_id: ClientID) -> impl std::future::Future<Output = Vec<SubAckResult>> + Send;
 }
 
 pub trait EventListener {
@@ -33,10 +35,10 @@ pub trait EventListener {
 }
 
 pub trait Consumer {
-    fn pubish(&self, con_id: ConnectionID, packet: PublishPacket) -> impl std::future::Future<Output = io::Result<()>> + Send;
+    fn pubish(&self, con_id: ClientID, packet: PublishPacket) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }
 
 pub trait Messanger {
     fn dequeue_message(&self) -> Option<PublishPacket>;
-    fn route(&self, topic: &str) -> impl std::future::Future<Output =  Option<Vec<ConnectionID>>> + Send;
+    fn route(&self, topic: &str) -> impl std::future::Future<Output =  Option<Vec<ClientID>>> + Send;
 }

@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 use tokio::{io, task::JoinHandle, time};
-use crate::{connection::line::SocketConnection, protocol::{mqtt::PublishPacket, v5::connack::ConnackPacket}};
-use super::{client::{Client, ClientID}, clients::Clients, linked_list::List, provider::EventHandler, trie::Trie, Consumer, Event, EventListener, Messanger};
+use crate::protocol::mqtt::PublishPacket;
+use super::{client::{Client, ClientID, UpdateClient}, clients::Clients, linked_list::List, provider::EventHandler, trie::Trie, Consumer, Event, EventListener, Messanger};
 
 pub struct BrokerMediator {
     clients: Clients,
@@ -18,31 +18,38 @@ impl BrokerMediator {
     }
 }
 
-impl BrokerMediator {
-    pub async fn register(&self, new_cl: Client, ack_packet: ConnackPacket) -> io::Result<()>{
-        {
-            let mut buffer = ack_packet.encode()
-                .map_err(
-                    |op| 
-                    io::Error::new(
-                    io::ErrorKind::InvalidData, 
-                    op.to_string())
-                )?;
-            new_cl.write(&mut buffer).await?;
-        }
-        println!("[register] client {:?}", new_cl.conid);
+impl<'cp> BrokerMediator {
+    pub async fn register<CB, R>(&self, new_cl: Client, callback: CB) -> io::Result<R>
+    where CB: FnOnce(&'cp mut Client) -> R
+    {
+        let clid = new_cl.clid.clone();
+        println!("[register] client {:?}", clid);
         self.clients.insert(new_cl).await;
-        Ok(())
+        let result = self.clients.search_mut_client(&clid, callback)
+            .await
+            .ok_or(io::Error::new(
+                io::ErrorKind::Other, 
+                format!("cannot inserting client {}", clid)
+            ))?;
+        Ok(result)
     }
 
     /// wakeup session
     /// replacing old socket with incoming socket connection 
-    pub async fn try_restore_connection(&self, clid: &ClientID, bucket: &mut Option<SocketConnection>) -> Result<(), String> {
-        let res = match self.clients.search_mut_client(clid, |c| c.restore_connection(bucket))
-            .await {
-                None => return Err(String::from("Not found")),
-                Some(res) => res
+    pub async fn try_restore_connection<CB, R>(&self, clid: &ClientID, bucket: &mut UpdateClient, callback: CB) -> Result<R, String> 
+    where CB: FnOnce(&'cp mut Client) -> R
+    {
+        let res = match self.clients.search_mut_client(clid, |c| {
+            match c.restore_connection(bucket) {
+                Ok(_) => (),
+                Err(e) => return Err(e.to_string())
             };
+            Ok(callback(c))
+        }).await 
+        {
+            None => return Err(String::from("Not found")),
+            Some(res) => res
+        };
         res
     }
 

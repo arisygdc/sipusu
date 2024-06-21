@@ -3,13 +3,9 @@ use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use tokio_rustls::server::TlsStream;
 use crate::protocol::v5::connect::ConnectPacket;
-use super::{errors::{ConnError, ErrorKind}, SocketReader, SocketWriter};
+use super::{errors::{ConnError, ErrorKind}, handshake::MqttConnectRequest, SocketReader, SocketWriter};
 
 pub type SecuredStream = TlsStream<TcpStream>;
-
-pub(super) trait MqttConnectRequest: SocketReader {
-    async fn read_request<'a>(&'a mut self) -> Result<ConnectPacket, ConnError>;
-}
 
 #[derive(Debug)]
 pub enum SocketConnection {
@@ -27,6 +23,7 @@ impl SocketReader for SocketConnection {
 }
 
 impl SocketWriter for SocketConnection {
+    
     async fn write_all(&mut self, buffer: &mut [u8]) -> tokio::io::Result<()> {
         match self {
             Self::Plain(p) => p.write_all(&buffer).await,

@@ -1,8 +1,8 @@
 use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
-use super::{errors::ConnError, line::{MqttConnectRequest, SocketConnection}, ConnectionID};
+use super::{errors::ConnError, handshake::{MqttConnectRequest, MqttConnectedResponse}, line::SocketConnection, ConnectionID};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
-use crate::{message_broker::{client::{Client, ClientID}, mediator::BrokerMediator}, protocol::v5::connack::ConnackPacket, server::Wire};
+use crate::{message_broker::{client::{Client, ClientID, UpdateClient}, mediator::BrokerMediator}, protocol::v5::connack::ConnackPacket, server::Wire};
 
 #[allow(dead_code)]
 pub struct Proxy {
@@ -49,23 +49,31 @@ impl Proxy {
         let mut conn = conn;
         let session_exists = self.broker.session_exists(&clid).await;
         if !clean_start && session_exists {
-            let mut bucket = Some(conn);
             // TODO: change client state from incoming request
             // TODO: response ack
-            let restore_feedback = self.broker.try_restore_connection(&clid, &mut bucket).await;
-            if restore_feedback.is_ok() {
-                response.session_present = false;
-                let _enc_res = response.encode().unwrap();
-                unimplemented!();
-                // return  Ok(());
+            let mut bucket = UpdateClient {
+                conid: Some(connid.clone()),
+                addr: Some(addr),
+                keep_alive: Some(keep_alive),
+                protocol_level: Some(protocol_level),
+                socket: Some(conn)
+            };
+
+            let restore_feedback = self.broker.try_restore_connection(&clid, &mut bucket, |c| {
+                response.session_present = true;
+                c.connack(&response)
+            }).await;
+
+            if let Ok(fb) = restore_feedback {
+                fb.await.unwrap();
+                return  Ok(());
             }
             
-            conn = bucket
+            conn = bucket.socket
                 .take()
                 .unwrap();
         }
         
-
         if session_exists {
             self.broker.remove(&clid).await.unwrap();
         }
@@ -79,9 +87,11 @@ impl Proxy {
             protocol_level
         );
 
-        self.broker.register(client, response)
-            .await
-            .unwrap();
+        self.broker.register(client, |c| {
+            c.connack(&response)
+        })
+        .await.unwrap()
+        .await.unwrap();
         Ok(())
     }
 

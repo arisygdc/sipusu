@@ -1,6 +1,6 @@
-use std::{fmt::Display, io, net::SocketAddr, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
+use std::{fmt::Display, io, net::SocketAddr, sync::{atomic::{AtomicU64, AtomicU8, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::Mutex};
-use crate::connection::{line::SocketConnection, ConnectionID};
+use crate::{connection::{handshake::MqttConnectedResponse, line::SocketConnection, ConnectionID, SocketWriter}, protocol::v5::connack::ConnackPacket};
 
 extern crate tokio;
 
@@ -141,12 +141,23 @@ impl Socket {
     }
 }
 
+const ST_NEEDACK: u8 = 0x7Eu8;
+const ST_DEAD: u8 = 0x7Fu8;
+const ST_READY: u8 = 0x80u8;
+const ST_READ: u8 = 0x81u8;
+const ST_WRITE: u8 = 0x82u8;
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Client {
     pub(super) conid: ConnectionID,
     pub(super) clid: ClientID,
-    pub(super) alive: AtomicBool,
+    /// state 130: soc_write
+    /// state 129: soc_read
+    /// state 128: alive
+    /// state 127: dead
+    /// state 126: response ack
+    pub(super) state: AtomicU8,
     pub(super) addr: SocketAddr,
     socket: Socket,
     dead_on: AtomicU64,
@@ -154,14 +165,13 @@ pub struct Client {
     keep_alive: u16,
 }
 
-// pub struct UpdateClient {
-//     pub conid: Option<ConnectionID>,
-//     pub clid: Option<ClientID>,
-//     pub addr: Option<SocketAddr>,
-//     pub socket: Option<Socket>,
-//     pub protocol_level: Option<u8>,
-//     pub keep_alive: Option<u16>,
-// }
+pub struct UpdateClient {
+    pub conid: Option<ConnectionID>,
+    pub addr: Option<SocketAddr>,
+    pub socket: Option<SocketConnection>,
+    pub protocol_level: Option<u8>,
+    pub keep_alive: Option<u16>,
+}
 
 impl Client {
     pub fn new(
@@ -179,7 +189,7 @@ impl Client {
             socket,
             clid,
             dead_on: AtomicU64::new(0),
-            alive: AtomicBool::new(true),
+            state: AtomicU8::new(ST_NEEDACK),
             keep_alive,
             protocol_level,
         }
@@ -195,8 +205,9 @@ impl Client {
 
     /// when set alive state = false
     /// it will schedule dead time
-    pub(super) fn set_alive(&self, state: bool) {
-        let cpmx = self.alive.compare_exchange(
+    pub(super) fn set_alive(&self, alive: bool) {
+        let state = alive as u8 + ST_DEAD;
+        let cpmx = self.state.compare_exchange(
             !state, 
             state, 
             Ordering::Acquire, 
@@ -208,7 +219,7 @@ impl Client {
         }
 
         let mut untime = 0;
-        if state == false {
+        if alive == false {
             untime = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -218,28 +229,43 @@ impl Client {
         self.dead_on.store(untime, Ordering::Release)
     }
 
-    pub fn restore_connection(&mut self, bucket: &mut Option<SocketConnection>) -> Result<(), String> {
-        let res = self.alive.compare_exchange_weak(
-            false, 
-            true,
-            Ordering::Acquire, 
+    // TODO: Error type
+    pub fn restore_connection(&mut self, bucket: &mut UpdateClient) -> io::Result<()> {
+        let res = self.state.compare_exchange_weak(
+            ST_DEAD, 
+            ST_NEEDACK,
+            Ordering::Acquire,
             Ordering::Relaxed
         );
 
         if res.is_err() {
-            return Err("connection still alive".to_string());
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, "connection still alive".to_string()));
         }
 
-        match bucket.take() {
+        match bucket.socket.take() {
             Some(s) => self.socket = Socket::new(s),
             None => panic!("empty connection")
+        };
+
+        if let Some(keep_alive) = bucket.keep_alive.take() {
+            self.keep_alive = keep_alive;
         }
+        if let  Some(addr) = bucket.addr.take() {
+            self.addr = addr
+        }
+        if let Some(connid) = bucket.conid.take() {
+            self.conid = connid;
+        }
+        if let Some(pr_lvl) = bucket.protocol_level.take() {
+            self.protocol_level = pr_lvl;
+        }
+
         Ok(())
     }
 
     #[inline]
     pub(super) fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::Relaxed)
+        self.state.load(Ordering::Relaxed) > ST_DEAD
     }
 
     #[inline]
@@ -251,6 +277,34 @@ impl Client {
 
         let untime = now();
         return untime > dtime;
+    }
+}
+
+impl SocketWriter for Client {
+    async fn write_all(&mut self, buffer: &mut [u8]) -> tokio::io::Result<()> {
+        let mut guard = self.socket.inner.lock().await;
+        guard.write_all(buffer).await
+    }
+}
+
+impl MqttConnectedResponse for Client {
+    async fn connack<'a>(&'a mut self, ack: &'a ConnackPacket) -> io::Result<()> {
+        if self.state.load(Ordering::Relaxed) != ST_NEEDACK {
+            panic!("response ack, but wrong time")
+        }
+        
+        let mut packet = ack.encode().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if self.state.compare_exchange(
+            ST_NEEDACK, 
+            ST_READY,
+            Ordering::Release, 
+            Ordering::Relaxed
+        ).is_err() {
+            panic!("response ack, but wrong time")
+        }
+
+        let res = self.write_all(&mut packet).await;
+        res
     }
 }
 

@@ -1,9 +1,9 @@
 use std::{fmt::Display, time::Duration};
-
 use tokio::{io, time};
 
 pub mod line;
 pub mod handler;
+pub mod handshake;
 mod errors;
 
 #[repr(transparent)]
@@ -26,5 +26,5 @@ pub trait SocketReader {
 }
 
 pub trait SocketWriter {
-    async fn write_all(&mut self, buffer: &mut [u8]) -> io::Result<()>;
+    fn write_all(&mut self, buffer: &mut [u8]) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }

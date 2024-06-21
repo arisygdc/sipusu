@@ -1,25 +1,27 @@
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{pin::Pin, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use bytes::BytesMut;
 use tokio::{io, sync::RwLock, task::yield_now};
 use crate::protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}};
 use super::{client::{Client, ClientID}, Consumer, Event, EventListener};
 
-type MutexClients = RwLock<Vec<Client>>;
+type MutexClients = RwLock<Vec<AtomicPtr<Client>>>;
 
 pub struct Clients(Arc<MutexClients>);
 
-impl Clients {
+impl<'lc> Clients {
     pub fn new() -> Self {
         Self(Arc::new(RwLock::new(Vec::new())))
     }
 
+    // FIXME: return error when equal
     /// insert sort by conn number
     pub async fn insert(&self, new_cl: Client) {
         let mut clients = self.0.write().await;
 
         let mut found = clients.len();
         for (i, cval) in clients.iter().enumerate() {
-            match new_cl.clid.cmp(&cval.clid) {
+            let clid = unsafe {&(*cval.load(Ordering::Acquire)).clid};
+            match new_cl.clid.cmp(clid) {
                 std::cmp::Ordering::Equal => panic!("kok iso"),
                 std::cmp::Ordering::Greater => continue,
                 std::cmp::Ordering::Less => ()
@@ -28,6 +30,10 @@ impl Clients {
             found = i;
             break;
         }
+
+        let new_cl = Box::new(new_cl);
+        let p = Box::into_raw(new_cl);
+        let new_cl = AtomicPtr::new(p);
         clients.insert(found, new_cl);
     }
 
@@ -35,7 +41,9 @@ impl Clients {
     #[allow(dead_code)]
     pub async fn remove(&self, clid: &ClientID) -> Result<(), String> {
         let mut clients = self.0.write().await;
-        let idx = clients.binary_search_by(|c| c.clid.cmp(&clid))
+        let idx = clients.binary_search_by(|c| unsafe {
+                (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
+            })
             .map_err(|_| format!("cannot find conn num {}", clid))?;
         clients.remove(idx);
         Ok(())
@@ -44,17 +52,23 @@ impl Clients {
     /// binary search by connection id
     /// in action lock all value on the vector
     /// give you access to mutable reference on client
-    pub async fn search_mut_client<R>(&self, clid: &ClientID, f: impl FnOnce(&mut Client) -> R) -> Option<R> {
-        let mut clients = self.0.write().await;
+    pub async fn search_mut_client<R>(&self, clid: &ClientID, f: impl FnOnce(&'lc mut Client) -> R) -> Option<R> {
+        let clients = self.0.read().await;
 
-        let idx = clients.binary_search_by(|c| c.clid.cmp(clid)).ok()?;
-        let r = f(&mut clients[idx]);
-        Some(r)
+        let idx = clients.binary_search_by(|c| unsafe {
+            (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
+        }).ok()?;
+        
+        let cl = unsafe {&mut (*clients[idx].load(Ordering::Relaxed))};
+        Some(f(cl))
     }
 
     pub async fn session_exists(&self, clid: &ClientID) -> bool {
         let clients = self.0.read().await;
-        clients.binary_search_by(|c| c.clid.cmp(clid)).is_ok()
+        clients.binary_search_by(|c| unsafe {
+            let t = &(*c.load(Ordering::Acquire)).clid;
+            t.cmp(clid)
+        }).is_ok()
     }
 
 }
@@ -65,8 +79,8 @@ impl EventListener for Clients {
     {
         let listeners = self.0.read().await;
         
-        for cval in listeners.iter() {
-            let mut buffer = BytesMut::zeroed(512);
+        for client in listeners.iter() {
+            let cval = Box::pin(unsafe{&*client.load(Ordering::Relaxed)});
             if !cval.is_alive() {
                 yield_now().await;
                 if !cval.is_dead_time() {
@@ -74,6 +88,7 @@ impl EventListener for Clients {
                 }
             }
 
+            let mut buffer = BytesMut::zeroed(512);
             let read = tokio::time::timeout(
                 Duration::from_millis(10), 
                 cval.listen(&mut buffer)
@@ -133,12 +148,17 @@ impl EventListener for Clients {
 
 impl Consumer for Clients {
     async fn pubish(&self, clid: ClientID, packet: PublishPacket) -> io::Result<()> {
-        let clients = self.0.read().await;
-        let idx = clients.binary_search_by(|c| c.clid.cmp(&clid)).unwrap();
         let mut buffer = packet.serialize();
-        let client = &clients[idx];
-        println!("send to: {}", client.addr);
-        client.write(&mut buffer).await
+        let res = self.search_mut_client(&clid, |c| {
+            println!("send to: {}", c.addr);
+            c.write(&mut buffer)
+        }).await;
+
+        if let Some(writer) = res {
+            return writer.await;
+        }
+        
+        Err(io::Error::new(io::ErrorKind::NotFound, format!("client id {}", clid)))
     }
 }
 

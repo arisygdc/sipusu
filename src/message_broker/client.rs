@@ -1,6 +1,8 @@
-use std::{fmt::Display, io, net::SocketAddr, sync::{atomic::{AtomicU64, AtomicU8, Ordering}, Arc}, time::{SystemTime, UNIX_EPOCH}};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::Mutex};
-use crate::{connection::{handshake::MqttConnectedResponse, line::SocketConnection, ConnectionID, SocketWriter}, protocol::v5::connack::ConnackPacket};
+use std::{fmt::Display, io, net::SocketAddr, sync::{atomic::AtomicU64, Arc}};
+use tokio::sync::Mutex;
+use crate::{connection::{handshake::MqttConnectedResponse, line::SocketConnection, ConnectionID, SocketReader, SocketWriter}, helper::time::sys_now, protocol::v5::connack::ConnackPacket};
+
+use super::clients::SessionController;
 
 extern crate tokio;
 
@@ -116,53 +118,23 @@ pub struct Socket {
 }
 
 impl Socket {
-    async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut guard = self.inner.lock().await;
-        match &mut *guard {
-            SocketConnection::Plain(ref mut stream) 
-                => stream.read(buf).await, 
-            SocketConnection::Secure(ref mut stream) 
-                => stream.read(buf).await
-        }
-    }
-
-    async fn write_all(&self, buf: &mut [u8]) -> io::Result<()> {
-        let mut guard = self.inner.lock().await;
-        match &mut *guard {
-            SocketConnection::Plain(ref mut stream) 
-                => stream.write_all(buf).await,
-            SocketConnection::Secure(ref mut stream) 
-                => stream.write_all(buf).await
-        }
-    }
-
     fn new(socket: SocketConnection) -> Self {
         Self { inner: Arc::new(Mutex::new(socket)) }
     }
 }
-
-const ST_NEEDACK: u8 = 0x7Eu8;
-const ST_DEAD: u8 = 0x7Fu8;
-const ST_READY: u8 = 0x80u8;
-const ST_READ: u8 = 0x81u8;
-const ST_WRITE: u8 = 0x82u8;
 
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Client {
     pub(super) conid: ConnectionID,
     pub(super) clid: ClientID,
-    /// state 130: soc_write
-    /// state 129: soc_read
-    /// state 128: alive
-    /// state 127: dead
-    /// state 126: response ack
-    pub(super) state: AtomicU8,
     pub(super) addr: SocketAddr,
     socket: Socket,
     dead_on: AtomicU64,
     protocol_level: u8,
+    ttl: u64,
     keep_alive: u16,
+    expr_interval: u32
 }
 
 pub struct UpdateClient {
@@ -183,63 +155,25 @@ impl Client {
         protocol_level: u8
     ) -> Self {
         let socket = Socket { inner: Arc::new(Mutex::new(socket)) };
+        let keep_alive = keep_alive.max(60);
         Self {
             conid,
             addr,
             socket,
             clid,
+            ttl: 0,
+            expr_interval: 0,
             dead_on: AtomicU64::new(0),
-            state: AtomicU8::new(ST_NEEDACK),
             keep_alive,
             protocol_level,
         }
     }
 
-    pub(super) async fn listen(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.socket.read(buffer).await
-    }
-
-    pub(super) async fn write(&self, buffer: &mut [u8]) -> io::Result<()> {
-        self.socket.write_all(buffer).await
-    }
-
-    /// when set alive state = false
-    /// it will schedule dead time
-    pub(super) fn set_alive(&self, alive: bool) {
-        let state = alive as u8 + ST_DEAD;
-        let cpmx = self.state.compare_exchange(
-            !state, 
-            state, 
-            Ordering::Acquire, 
-            Ordering::Relaxed
-        );
-
-        if cpmx.is_err() {
-            return;
-        }
-
-        let mut untime = 0;
-        if alive == false {
-            untime = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-        }
-
-        self.dead_on.store(untime, Ordering::Release)
-    }
-
     // TODO: Error type
     pub fn restore_connection(&mut self, bucket: &mut UpdateClient) -> io::Result<()> {
-        let res = self.state.compare_exchange_weak(
-            ST_DEAD, 
-            ST_NEEDACK,
-            Ordering::Acquire,
-            Ordering::Relaxed
-        );
-
-        if res.is_err() {
-            return Err(io::Error::new(io::ErrorKind::AddrInUse, "connection still alive".to_string()));
+        let now = sys_now();
+        if !self.is_alive(now) && self.is_expired(now) {
+           return Err(io::Error::new(io::ErrorKind::Other, String::from("connection is expired"))); 
         }
 
         match bucket.socket.take() {
@@ -263,20 +197,53 @@ impl Client {
         Ok(())
     }
 
-    #[inline]
-    pub(super) fn is_alive(&self) -> bool {
-        self.state.load(Ordering::Relaxed) > ST_DEAD
+
+    // #[inline]
+    // pub(super) fn is_alive(&self) -> bool {
+    //     self.state.load(Ordering::Relaxed) > ST_DEAD
+    // }
+
+    // #[inline]
+    // pub(super) fn keep_alive(&self) -> Result<u64, String> {
+    //     let state = self.state.load(Ordering::Release);
+    //     match state.cmp(&ST_READY) {
+    //         cmp::Ordering::Equal | cmp::Ordering::Greater => (),
+    //         cmp::Ordering::Less => return Err(format!("cannot keep client {}, when not alive state", &self.clid))
+    //     }
+
+    //     let updated = self.dead_on.fetch_update(
+    //         Ordering::Acquire, 
+    //         Ordering::Relaxed, 
+    //         |dt| {
+    //             let now = now();
+    //             let schedule = self.keep_alive as u64 + now;
+    //             if cfg!(debug_asertion) {
+    //                 if dt > now {
+    //                     panic!();
+    //                 }
+    //             }
+    //             Some(schedule)
+    //         }
+    //     );
+    //     updated.map_err(|_| format!("fail to keep alive client {}", &self.clid))
+    // }
+}
+
+impl SessionController for Client {
+    fn is_alive(&self, t: u64) -> bool {
+        self.ttl <= t
     }
 
-    #[inline]
-    pub(super) fn is_dead_time(&self) -> bool {
-        let dtime = self.dead_on.load(Ordering::Acquire);
-        if dtime == 0 {
-            return false;
-        }
+    fn is_expired(&self, t: u64) -> bool {
+        (self.expr_interval as u64 + self.ttl) >= t
+    }
 
-        let untime = now();
-        return untime > dtime;
+    fn keep_alive(&mut self, t: u64) -> Result<u64, String> {
+        if t < self.ttl {
+            return Err(String::from("given time cannot less than ttl"));
+        }
+        self.ttl = t + self.keep_alive as u64;
+        Ok(self.ttl)
     }
 }
 
@@ -287,31 +254,17 @@ impl SocketWriter for Client {
     }
 }
 
-impl MqttConnectedResponse for Client {
-    async fn connack<'a>(&'a mut self, ack: &'a ConnackPacket) -> io::Result<()> {
-        if self.state.load(Ordering::Relaxed) != ST_NEEDACK {
-            panic!("response ack, but wrong time")
-        }
-        
-        let mut packet = ack.encode().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if self.state.compare_exchange(
-            ST_NEEDACK, 
-            ST_READY,
-            Ordering::Release, 
-            Ordering::Relaxed
-        ).is_err() {
-            panic!("response ack, but wrong time")
-        }
-
-        let res = self.write_all(&mut packet).await;
-        res
+impl SocketReader for Client {
+    async fn read(&mut self, buffer: &mut [u8]) -> tokio::io::Result<usize> {
+        let mut guard = self.socket.inner.lock().await;
+        guard.read(buffer).await
     }
 }
 
-#[inline]
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+impl MqttConnectedResponse for Client {
+    async fn connack<'a>(&'a mut self, ack: &'a ConnackPacket) -> io::Result<()> {
+        let mut packet = ack.encode().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let res = self.write_all(&mut packet).await;
+        res
+    }
 }

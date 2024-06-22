@@ -1,7 +1,7 @@
-use std::{pin::Pin, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
+use std::{pin::{self, Pin}, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use bytes::BytesMut;
-use tokio::{io, sync::RwLock, task::yield_now};
-use crate::protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}};
+use tokio::{io, sync::RwLock};
+use crate::{connection::{SocketReader, SocketWriter}, helper::time::sys_now, protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}}};
 use super::{client::{Client, ClientID}, Consumer, Event, EventListener};
 
 type MutexClients = RwLock<Vec<AtomicPtr<Client>>>;
@@ -49,8 +49,8 @@ impl<'lc> Clients {
         Ok(())
     }
 
-    /// binary search by connection id
-    /// in action lock all value on the vector
+    /// binary search by client id
+    /// in action read guard from vector
     /// give you access to mutable reference on client
     pub async fn search_mut_client<R>(&self, clid: &ClientID, f: impl FnOnce(&'lc mut Client) -> R) -> Option<R> {
         let clients = self.0.read().await;
@@ -78,28 +78,20 @@ impl EventListener for Clients {
         where E: Event + Send + Sync 
     {
         let listeners = self.0.read().await;
-        
+        let sys_time = sys_now();
         for client in listeners.iter() {
-            let cval = Box::pin(unsafe{&*client.load(Ordering::Relaxed)});
-            if !cval.is_alive() {
-                yield_now().await;
-                if !cval.is_dead_time() {
+            let mut cval = pin::Pin::new(unsafe{&mut *client.load(Ordering::Relaxed)});
+            if !cval.is_alive(sys_time) {
+                if cval.is_expired(sys_time) {
+                    println!("TODO: remove expired clien");
+                    println!("client expired: {}", cval.clid);
                     continue;
                 }
             }
 
             let mut buffer = BytesMut::zeroed(512);
-            let read = tokio::time::timeout(
-                Duration::from_millis(10), 
-                cval.listen(&mut buffer)
-            ).await;
-
-            let read_result;
-            if let Ok(res) = read {
-                read_result = res;
-            } else {
-                continue;
-            }
+            let duration = Duration::from_millis(10);
+            let read_result = cval.read_timeout(&mut buffer, duration).await;
 
             let n = match read_result {
                 Ok(n) => n, 
@@ -110,13 +102,11 @@ impl EventListener for Clients {
             };
 
             if n == 0 {
-                yield_now().await;
-
-                if cval.is_alive() {
-                    cval.set_alive(false); 
-                }
                 continue;
             }
+
+            cval.keep_alive(sys_time+1)
+                .unwrap();
 
             let mut buffer = buffer.split_to(n);
             
@@ -129,9 +119,9 @@ impl EventListener for Clients {
                         let result: Vec<SubAckResult> = event.subscribe_topics(subs.list, cval.clid.clone()).await;
                         let response = SubscribeAck{ id: subs.id, subs_result: result };
                         
-                        let pin = Pin::new(cval);
+                        let mut pin = Pin::new(cval);
                         let id = response.id;
-                        let result = pin.write(&mut response.serialize()).await;
+                        let result = pin.write_all(&mut response.serialize()).await;
                         if let Err(e) = result {
                             println!("[{}] {}", id, e.to_string());
                         }
@@ -151,7 +141,7 @@ impl Consumer for Clients {
         let mut buffer = packet.serialize();
         let res = self.search_mut_client(&clid, |c| {
             println!("send to: {}", c.addr);
-            c.write(&mut buffer)
+            c.write_all(&mut buffer)
         }).await;
 
         if let Some(writer) = res {
@@ -167,3 +157,18 @@ impl Clone for Clients {
         Self(self.0.clone())
     }
 }   
+
+/// time base session control for `signaling`
+/// 
+/// compare internal variable with given time,
+/// there is 3 main concept: alive, dead, expired.
+/// 
+/// alive and death indicates you may use this session or not.
+/// when session is expire, you dont need to hold this connection.
+pub trait SessionController {
+    fn is_alive(&self, t: u64) -> bool;
+    /// set `t` as checkpoint then add keep alive duration,
+    /// generate error when old duration less than `t`
+    fn keep_alive(&mut self, t: u64) -> Result<u64, String>;
+    fn is_expired(&self, t: u64) -> bool;
+}

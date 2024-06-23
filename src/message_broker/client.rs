@@ -163,7 +163,7 @@ impl Client {
             addr,
             socket,
             clid,
-            ttl: 0,
+            ttl: sys_now() + keep_alive as u64,
             expr_interval,
             dead_on: AtomicU64::new(0),
             keep_alive,
@@ -198,54 +198,27 @@ impl Client {
 
         Ok(())
     }
-
-
-    // #[inline]
-    // pub(super) fn is_alive(&self) -> bool {
-    //     self.state.load(Ordering::Relaxed) > ST_DEAD
-    // }
-
-    // #[inline]
-    // pub(super) fn keep_alive(&self) -> Result<u64, String> {
-    //     let state = self.state.load(Ordering::Release);
-    //     match state.cmp(&ST_READY) {
-    //         cmp::Ordering::Equal | cmp::Ordering::Greater => (),
-    //         cmp::Ordering::Less => return Err(format!("cannot keep client {}, when not alive state", &self.clid))
-    //     }
-
-    //     let updated = self.dead_on.fetch_update(
-    //         Ordering::Acquire, 
-    //         Ordering::Relaxed, 
-    //         |dt| {
-    //             let now = now();
-    //             let schedule = self.keep_alive as u64 + now;
-    //             if cfg!(debug_asertion) {
-    //                 if dt > now {
-    //                     panic!();
-    //                 }
-    //             }
-    //             Some(schedule)
-    //         }
-    //     );
-    //     updated.map_err(|_| format!("fail to keep alive client {}", &self.clid))
-    // }
 }
 
 impl SessionController for Client {
     fn is_alive(&self, t: u64) -> bool {
-        self.ttl <= t
+        self.ttl >= t
     }
 
     fn is_expired(&self, t: u64) -> bool {
-        (self.expr_interval as u64 + self.ttl) >= t
+        (self.expr_interval as u64 + self.ttl) <= t
     }
 
     fn keep_alive(&mut self, t: u64) -> Result<u64, String> {
-        if t < self.ttl {
-            return Err(String::from("given time cannot less than ttl"));
+        if self.ttl <= t {
+            return Err(String::from("already expired"));
         }
         self.ttl = t + self.keep_alive as u64;
         Ok(self.ttl)
+    }
+
+    fn kill(&mut self) {
+        self.ttl = 0;
     }
 }
 

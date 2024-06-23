@@ -1,4 +1,4 @@
-use std::{pin::{self, Pin}, sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
+use std::{sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use bytes::BytesMut;
 use tokio::{io, sync::RwLock};
 use crate::{connection::{SocketReader, SocketWriter}, helper::time::sys_now, protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}}};
@@ -70,7 +70,6 @@ impl<'lc> Clients {
             t.cmp(clid)
         }).is_ok()
     }
-
 }
 
 impl EventListener for Clients {
@@ -80,13 +79,13 @@ impl EventListener for Clients {
         let listeners = self.0.read().await;
         let sys_time = sys_now();
         for client in listeners.iter() {
-            let mut cval = pin::Pin::new(unsafe{&mut *client.load(Ordering::Relaxed)});
+            let cval = unsafe{&mut *client.load(Ordering::Relaxed)};
             if !cval.is_alive(sys_time) {
                 if cval.is_expired(sys_time) {
-                    println!("TODO: remove expired clien");
-                    println!("client expired: {}", cval.clid);
+                    // TODO: Remove expired
                     continue;
                 }
+                continue;
             }
 
             let mut buffer = BytesMut::zeroed(512);
@@ -95,13 +94,11 @@ impl EventListener for Clients {
 
             let n = match read_result {
                 Ok(n) => n, 
-                Err(err) => { 
-                    println!("err: {}", err.to_string());
-                    continue;
-                }
+                Err(_) => continue
             };
 
             if n == 0 {
+                cval.kill();
                 continue;
             }
 
@@ -119,9 +116,8 @@ impl EventListener for Clients {
                         let result: Vec<SubAckResult> = event.subscribe_topics(subs.list, cval.clid.clone()).await;
                         let response = SubscribeAck{ id: subs.id, subs_result: result };
                         
-                        let mut pin = Pin::new(cval);
                         let id = response.id;
-                        let result = pin.write_all(&mut response.serialize()).await;
+                        let result = cval.write_all(&mut response.serialize()).await;
                         if let Err(e) = result {
                             println!("[{}] {}", id, e.to_string());
                         }
@@ -167,6 +163,7 @@ impl Clone for Clients {
 /// when session is expire, you dont need to hold this connection.
 pub trait SessionController {
     fn is_alive(&self, t: u64) -> bool;
+    fn kill(&mut self);
     /// set `t` as checkpoint then add keep alive duration,
     /// generate error when old duration less than `t`
     fn keep_alive(&mut self, t: u64) -> Result<u64, String>;

@@ -145,6 +145,7 @@ pub struct UpdateClient {
     pub keep_alive: Option<u16>,
 }
 
+// keepalive min value: 60
 impl Client {
     pub fn new(
         conid: ConnectionID,
@@ -152,6 +153,7 @@ impl Client {
         addr: SocketAddr,
         clid: ClientID,
         keep_alive: u16,
+        expr_interval: u32,
         protocol_level: u8
     ) -> Self {
         let socket = Socket { inner: Arc::new(Mutex::new(socket)) };
@@ -162,7 +164,7 @@ impl Client {
             socket,
             clid,
             ttl: 0,
-            expr_interval: 0,
+            expr_interval,
             dead_on: AtomicU64::new(0),
             keep_alive,
             protocol_level,

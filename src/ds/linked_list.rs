@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::{mem, ptr, sync::atomic::{AtomicPtr, Ordering}};
 
 pub struct AtmcNode<T> {

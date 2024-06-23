@@ -6,8 +6,6 @@ use crate::protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, Subscribe}}
 pub mod client;
 pub mod clients;
 pub mod mediator;
-mod trie;
-mod linked_list;
 mod provider;
 
 pub const MAX_QOS: u8 = 2;

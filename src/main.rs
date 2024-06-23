@@ -4,6 +4,7 @@ mod authentication;
 mod message_broker;
 mod protocol;
 mod helper;
+mod ds;
 
 use message_broker::mediator::BrokerMediator;
 use std::io;

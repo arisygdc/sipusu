@@ -1,6 +1,6 @@
 use std::{fs::File, io::{self, BufReader}, net::SocketAddr, path::{Path, PathBuf}, sync::Arc};
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, task::JoinHandle};
+use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs}, select, signal, task::JoinHandle};
 use tokio_rustls::{rustls::{pki_types::{CertificateDer, PrivateKeyDer}, ServerConfig}, TlsAcceptor};
 use crate::connection::handler::Proxy;
 
@@ -73,12 +73,24 @@ impl Server {
     {
         println!("[tcp] unsecure");
         let listener = TcpListener::bind(&addr).await?;
-        loop {
-            let (stream, peer_addr) = listener.accept().await?;
-            
-            println!("[stream] incoming");
-            wire.connect(stream, peer_addr).await;
+        'tcp: loop {
+            select! {
+                incoming = listener.accept() => {
+                    let (stream, peer_addr) = match incoming {
+                        Ok(s) => s,
+                        Err(e) => panic!("{}", e.to_string())
+                    };
+
+                    println!("[stream] incoming");
+                    wire.connect(stream, peer_addr).await;
+                },
+                _ = signal::ctrl_c() => {
+                    break 'tcp
+                }
+            }
         }
+        println!("[tcp] closed");
+        Ok(())
     }
 }
 

@@ -1,5 +1,5 @@
 use std::{sync::Arc, time::Duration};
-use tokio::{io, task::JoinHandle, time};
+use tokio::{io, select, signal, sync::broadcast::{self, Receiver, Sender}, task::JoinHandle, time};
 use crate::{ds::{linked_list::List, trie::Trie}, protocol::mqtt::PublishPacket};
 use super::{client::{Client, ClientID, UpdateClient}, clients::Clients, provider::EventHandler, Consumer, Event, EventListener, Messanger};
 
@@ -69,45 +69,65 @@ impl<'cp> BrokerMediator {
             self.message_queue.clone(), 
             self.router.clone()
         );
-    
-        let t1 = tokio::task::spawn(event_listener(clients.clone(), action.clone()));
-        let t2 = tokio::task::spawn(observer_message(action.clone(), clients.clone()));
+        
+        let (tx_sigkill, rx_sigkill) = broadcast::channel::<()>(1);
+        let t1 = tokio::task::spawn(event_listener(clients.clone(), action.clone(), rx_sigkill));
+        let t2 = tokio::task::spawn(observer_message(action.clone(), clients.clone(), tx_sigkill));
         (t1, t2)
     }
 }
 
-async fn event_listener<L, E>(trig: L, event: E) 
+async fn event_listener<L, E>(trig: L, event: E, mut rx_sigkill: Receiver<()>) 
     where 
         L: EventListener + Send + Sync,
         E: Event + Send + Sync
 {
-    loop { 
-        let len = trig.count_listener().await;
-        if len == 0 {
-            time::sleep(Duration::from_millis(5)).await;
-            continue;
+    println!("[listener] start");
+    'listener: loop {
+        select! {
+            _ = rx_sigkill.recv() => {
+                println!("trying to shutdown");
+                break 'listener;
+            },
+            len = trig.count_listener() => {
+                if len == 0 {
+                    time::sleep(Duration::from_millis(5)).await;
+                    continue 'listener;
+                }
+                trig.listen_all(&event).await; 
+            }
         }
-        trig.listen_all(&event).await; 
     }
+    println!("[listener] shutdown");
 }
 
-async fn observer_message<M, S>(provider: M, forwarder: S)
+async fn observer_message<M, S>(provider: M, forwarder: S, tx_sigkill: Sender<()>)
     where 
         M: Messanger + Send + Sync,
         S: Consumer + Send + Sync
 {
-    loop {
-        if let Some(packet) = provider.dequeue_message() {
-            println!("routing");
-            let to = provider.route(&packet.topic).await;
-            println!("[to] {:?}", to);
-            let dst = match to {
-                None => continue,
-                Some(dst) => dst[0].clone()
-            };
-            // TODO: QoS
-            forwarder.pubish(dst, packet).await.unwrap();
+    println!("[observer] start");
+    'observer: loop {
+        select! {
+            _ = signal::ctrl_c() => {
+                tx_sigkill.send(()).unwrap();
+                break 'observer;
+            },
+            _ = async {
+                if let Some(packet) = provider.dequeue_message() {
+                    println!("routing");
+                    let to = provider.route(&packet.topic).await;
+                    println!("[to] {:?}", to);
+                    let dst = match to {
+                        None => return,
+                        Some(dst) => dst[0].clone()
+                    };
+                    // TODO: QoS
+                    forwarder.pubish(dst, packet).await.unwrap();
+                }
+                time::sleep(Duration::from_millis(10)).await;
+            } => ()
         }
-        time::sleep(Duration::from_millis(10)).await;
     }
+    println!("[observer] shutdown");
 }

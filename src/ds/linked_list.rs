@@ -29,7 +29,7 @@ impl<T> List<T> {
         let new_node = Box::into_raw(Box::new(AtmcNode::new(val)));
         
         loop {
-            let head = self.head.load(Ordering::SeqCst);
+            let head = self.head.load(Ordering::Acquire);
 
             if head.is_null() {
                 let compex = self
@@ -64,25 +64,25 @@ impl<T> List<T> {
 
 impl<T: Default> List<T> {
     pub fn take_first(&self) -> Option<T> {
-        // #[allow(unused_assignments)]
         let default;
 
-        let head = self.head.load(Ordering::SeqCst);
+        let head = self.head.load(Ordering::Acquire);
         if head.is_null() {
             return None;
         }
-
-        let cmp = unsafe {
-            default = mem::take(&mut (*head).val);
-            let sec = (*head).next.load(Ordering::SeqCst);
+        
+        unsafe {
+            let next = (*head).next.load(Ordering::Acquire);
             self.head.compare_exchange(
                 head, 
-                sec, 
-                Ordering::SeqCst, 
-                Ordering::SeqCst
-            )
+                next, 
+                Ordering::Relaxed, 
+                Ordering::Relaxed
+            ).ok()?
         };
-        cmp.ok().map(|_| default)
+        let mut cast = unsafe{Box::from_raw(head)};
+        default = mem::take(&mut cast.val);
+        Some(default)
     }
 }
 
@@ -104,7 +104,7 @@ unsafe fn iter_exchange<T>(curptr: *mut AtmcNode<T>, excd: *mut AtmcNode<T>) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::SystemTime};
     use tokio::{join, task::yield_now};
 
     use super::List;
@@ -127,7 +127,6 @@ mod tests {
         let _ = join!(t1, t2, t3);
         unsafe {
             let ppp = list.collects();
-            // println!("{:?}", ppp);
             assert!(ppp.len() == 18)
         }
     }
@@ -156,21 +155,30 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread",  worker_threads = 3)]
     async fn concurrent_take_first() {
-        let list: Arc<List<u8>> = Arc::new(List::new());
-        for i in 0..30 {
+        let list: Arc<List<u16>> = Arc::new(List::new());
+        for i in 0..600 {
             list.append(i);
         }
         
-        async fn take(list: Arc<List<u8>>, id: u8) {
-            for _ in 0..10 {
-                println!("[{}] {:?}, ", id, list.take_first())
+        async fn take(list: Arc<List<u16>>, _id: u8) {
+            for _ in 0..200 {
+                list.take_first();
             }
         }
 
-        let t1 = tokio::spawn(take(list.clone(), 1));
-        let t2 = tokio::spawn(take(list.clone(), 2));
-        let t3 = tokio::spawn(take(list.clone(), 3));
-
+        let t1 = tokio::task::spawn(take(list.clone(), 1));
+        let t2 = tokio::task::spawn(take(list.clone(), 2));
+        let t3 = tokio::task::spawn(take(list.clone(), 3));
+        let start = now();
         let _ = join!(t1, t2, t3);
+        // let end = now();
+        println!("start: {:?}", start);
+        // println!("end: {:?}", end);
+        println!("elapsed: {:?}", start.elapsed());
+
+    }
+
+    fn now() -> SystemTime {
+        SystemTime::now()
     }
 }

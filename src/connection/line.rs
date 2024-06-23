@@ -36,9 +36,8 @@ impl MqttConnectRequest for SocketConnection {
     async fn read_request<'a>(&'a mut self) -> Result<ConnectPacket, ConnError> {
         let mut buffer = {
             let mut buffer = BytesMut::zeroed(256);
-            let dur = Duration::from_secs(1);
+            let dur = Duration::from_secs(3);
             let read_len = self.read_timeout(&mut buffer, dur).await.unwrap();
-
             buffer.split_to(read_len)
         };
 
@@ -48,15 +47,3 @@ impl MqttConnectRequest for SocketConnection {
         Ok(packet)
     }
 }
-
-// impl MqttConnectResponse for SocketConnection {
-//     async fn connack<'a>(&'a mut self, ack: ConnackPacket) -> Result<(), ConnError> {
-//         let mut packet = ack.encode()
-//             .map_err(|e| ConnError::new(ErrorKind::InvalidData, Some(e)))?;
-
-//         match self.write_all(&mut packet).await {
-//             Err(err) => Err(ConnError::new(ErrorKind::ConnectionAborted, Some(err.to_string()))),
-//             Ok(empty) => Ok(empty)
-//         }
-//     }
-// }

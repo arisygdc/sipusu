@@ -25,12 +25,14 @@ impl<'cp> BrokerMediator {
         let clid = new_cl.clid.clone();
         println!("[register] client {:?}", clid);
         self.clients.insert(new_cl).await;
+        println!("inserted");
         let result = self.clients.search_mut_client(&clid, callback)
             .await
             .ok_or(io::Error::new(
                 io::ErrorKind::Other, 
                 format!("cannot inserting client {}", clid)
             ))?;
+        println!("registered");
         Ok(result)
     }
 

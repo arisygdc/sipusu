@@ -15,14 +15,14 @@ impl<'lc> Clients {
 
     // FIXME: return error when equal
     /// insert sort by conn number
-    pub async fn insert(&self, new_cl: Client) {
+    pub async fn insert(&self, new_cl: Client) -> Result<(), String> {
         let mut clients = self.0.write().await;
 
         let mut found = clients.len();
         for (i, cval) in clients.iter().enumerate() {
             let clid = unsafe {&(*cval.load(Ordering::Acquire)).clid};
             match new_cl.clid.cmp(clid) {
-                std::cmp::Ordering::Equal => panic!("kok iso"),
+                std::cmp::Ordering::Equal => return Err("duplicate client id".to_string()),
                 std::cmp::Ordering::Greater => continue,
                 std::cmp::Ordering::Less => ()
             }
@@ -35,6 +35,7 @@ impl<'lc> Clients {
         let p = Box::into_raw(new_cl);
         let new_cl = AtomicPtr::new(p);
         clients.insert(found, new_cl);
+        Ok(())
     }
 
     // TODO: Create Garbage collector

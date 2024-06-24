@@ -1,5 +1,5 @@
 use std::{sync::Arc, time::Duration};
-use tokio::{io, select, signal, sync::broadcast::{self, Receiver, Sender}, task::JoinHandle, time};
+use tokio::{select, signal, sync::broadcast::{self, Receiver, Sender}, task::JoinHandle, time};
 use crate::{ds::{linked_list::List, trie::Trie}, protocol::mqtt::PublishPacket};
 use super::{client::{Client, ClientID, UpdateClient}, clients::Clients, provider::EventHandler, Consumer, Event, EventListener, Messanger};
 
@@ -19,19 +19,16 @@ impl BrokerMediator {
 }
 
 impl<'cp> BrokerMediator {
-    pub async fn register<CB, R>(&self, new_cl: Client, callback: CB) -> io::Result<R>
+    pub async fn register<CB, R>(&self, new_cl: Client, callback: CB) -> Result<R, String>
     where CB: FnOnce(&'cp mut Client) -> R
     {
         let clid = new_cl.clid.clone();
         println!("[register] client {:?}", clid);
-        self.clients.insert(new_cl).await;
+        self.clients.insert(new_cl).await?;
         println!("inserted");
         let result = self.clients.search_mut_client(&clid, callback)
             .await
-            .ok_or(io::Error::new(
-                io::ErrorKind::Other, 
-                format!("cannot inserting client {}", clid)
-            ))?;
+            .ok_or(format!("cannot inserting client {}", clid))?;
         println!("registered");
         Ok(result)
     }

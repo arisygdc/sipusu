@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 use tokio::{select, signal, sync::broadcast::{self, Receiver, Sender}, task::JoinHandle, time};
 use crate::{ds::{linked_list::List, trie::Trie}, protocol::mqtt::PublishPacket};
-use super::{client::{Client, ClientID, UpdateClient}, clients::Clients, provider::EventHandler, Consumer, Event, EventListener, Messanger};
+use super::{client::client::{Client, ClientID, UpdateClient}, client::clients::Clients, provider::EventHandler, Consumer, Event, EventListener, Messanger};
 
 pub struct BrokerMediator {
     clients: Clients,

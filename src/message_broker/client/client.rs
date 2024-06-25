@@ -2,7 +2,7 @@ use std::{fmt::Display, io, net::SocketAddr, sync::{atomic::AtomicU64, Arc}};
 use tokio::sync::Mutex;
 use crate::{connection::{handshake::MqttConnectedResponse, line::SocketConnection, ConnectionID, SocketReader, SocketWriter}, helper::time::sys_now, protocol::v5::connack::ConnackPacket};
 
-use super::clients::SessionController;
+use super::SessionController;
 
 extern crate tokio;
 
@@ -127,7 +127,7 @@ impl Socket {
 #[allow(dead_code)]
 pub struct Client {
     pub(super) conid: ConnectionID,
-    pub(super) clid: ClientID,
+    pub clid: ClientID,
     pub(super) addr: SocketAddr,
     socket: Socket,
     dead_on: AtomicU64,

@@ -1,8 +1,8 @@
 use std::{sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use bytes::BytesMut;
 use tokio::{io, sync::RwLock};
-use crate::{connection::{SocketReader, SocketWriter}, helper::time::sys_now, protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}}};
-use super::{client::{Client, ClientID}, Consumer, Event, EventListener};
+use crate::{connection::{SocketReader, SocketWriter}, helper::time::sys_now, message_broker::{Consumer, Event, EventListener}, protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}}};
+use super::{client::{Client, ClientID}, SessionController};
 
 type MutexClients = RwLock<Vec<AtomicPtr<Client>>>;
 
@@ -153,20 +153,4 @@ impl Clone for Clients {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
-}   
-
-/// time base session control for `signaling`
-/// 
-/// compare internal variable with given time,
-/// there is 3 main concept: alive, dead, expired.
-/// 
-/// alive and death indicates you may use this session or not.
-/// when session is expire, you dont need to hold this connection.
-pub trait SessionController {
-    fn is_alive(&self, t: u64) -> bool;
-    fn kill(&mut self);
-    /// set `t` as checkpoint then add keep alive duration,
-    /// generate error when old duration less than `t`
-    fn keep_alive(&mut self, t: u64) -> Result<u64, String>;
-    fn is_expired(&self, t: u64) -> bool;
 }

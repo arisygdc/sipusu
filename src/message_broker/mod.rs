@@ -1,10 +1,9 @@
 use std::io;
-use client::ClientID;
+use client::client::ClientID;
 
 use crate::protocol::{mqtt::PublishPacket, subscribe::{SubAckResult, Subscribe}};
 
 pub mod client;
-pub mod clients;
 pub mod mediator;
 mod provider;
 

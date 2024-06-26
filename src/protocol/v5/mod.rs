@@ -2,6 +2,7 @@ pub mod connect;
 pub mod connack;
 pub mod subscribe;
 pub mod subsack;
+pub mod publish;
 use bytes::{Buf, BufMut, BytesMut};
 
 

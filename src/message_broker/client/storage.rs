@@ -36,7 +36,7 @@ impl ClientStore {
             create_dir(&cl_space).await?;
         }
 
-        cl_space.push("subscribe");
+        cl_space.push("subscribed");
         if !cl_space.exists() {
             fopt.open(&cl_space).await?;
         }
@@ -80,7 +80,6 @@ impl ClientStore {
             
             {
                 let r_buf = buf.split_to(n);
-                println!("rbuf: {:?}", r_buf);
                 target_seek += n;
                 let mut c = 0;
                 for i in 0..n {
@@ -89,9 +88,10 @@ impl ClientStore {
                         continue;
                     }
 
-                    let ok = r_buf[c+1..i].eq(topic.as_bytes());
-                    if ok {
-                        c = i;
+                    let ok = r_buf[c+2..i].eq(topic.as_bytes());
+                    if !ok {
+                        c = i+1;
+                        continue;
                     }
                     
                     let t = target_seek - n;
@@ -140,8 +140,11 @@ mod tests {
         let v = vec![
             Subscribe{
                 qos: 0x1,
-                topic: "topic/b".to_owned()
+                topic: "topic/a".to_owned()
             },Subscribe{
+                qos: 0x1,
+                topic: "topic/b".to_owned()
+            }, Subscribe{
                 qos: 0x1,
                 topic: "topic/c".to_owned()
             },
@@ -149,6 +152,7 @@ mod tests {
         logs.subscribe(&clid, &v)
         .await
         .unwrap();
-        logs.unsubscribe(&clid, &v[0].topic).await.unwrap();
+        // logs.unsubscribe(&clid, &v[0].topic).await.unwrap();
+        logs.unsubscribe(&clid, &v[2].topic).await.unwrap();
     }
 }

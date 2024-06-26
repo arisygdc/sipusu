@@ -1,7 +1,7 @@
 use std::{env, path::{Path, PathBuf}};
 
 use bytes::{BufMut, BytesMut};
-use tokio::{fs::OpenOptions, io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader}};
+use tokio::{fs::{create_dir, OpenOptions}, io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader}};
 
 use crate::protocol::subscribe::Subscribe;
 
@@ -26,12 +26,19 @@ impl ClientStore {
 
     pub async fn prepare(&self, clid: &ClientID) -> io::Result<()> {
         let mut cl_space = self.path.clone();
+        let mut fopt = OpenOptions::new();
+        fopt
+            .write(true)
+            .create(true);
+
         cl_space.push(clid.to_string());
+        if !cl_space.is_dir() {
+            create_dir(&cl_space).await?;
+        }
+
         cl_space.push("subscribe");
-        
         if !cl_space.exists() {
-            let mut fopt = OpenOptions::new();
-            fopt.write(true).create(true).open(cl_space).await?;
+            fopt.open(&cl_space).await?;
         }
         Ok(())
     }
@@ -106,22 +113,6 @@ impl ClientStore {
     }
 }
 
-pub(super) async fn prepare(clid: &ClientID) -> io::Result<()> {
-    let s = format!("{}/{}/{}", env::current_dir().unwrap().display(), DATA_STORE, clid);
-    let path = Path::new(&s);
-    if !path.is_dir() {
-        tokio::fs::create_dir(&path).await?;
-    };
-
-    let sub = format!("{}/subscribed", &path.display());
-    let subpath = Path::new(&sub);
-    if !subpath.exists() {
-        let mut fopt = OpenOptions::new();
-        fopt.write(true).create(true).open(subpath).await?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use crate::protocol::subscribe::Subscribe;
@@ -133,7 +124,8 @@ mod tests {
         let clid = ClientID::new("raw_clid".to_owned());
         let l = ClientStore::new().await;
         let logs = l.unwrap();
-        logs.prepare(&clid).await;
+        logs.prepare(&clid).await
+            .unwrap();
         tokio::fs::remove_dir(logs.path).await.unwrap();
     }
 
@@ -142,7 +134,8 @@ mod tests {
         let clid = ClientID::new("raw_clid".to_owned());
         let l = ClientStore::new().await;
         let logs = l.unwrap();
-        logs.prepare(&clid).await;
+        logs.prepare(&clid).await
+            .unwrap();
         
         let v = vec![
             Subscribe{

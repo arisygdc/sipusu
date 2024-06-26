@@ -1,6 +1,6 @@
 pub mod client;
 pub mod clients;
-mod storage;
+pub mod storage;
 
 pub const DATA_STORE: &str = ".dbg_data/clients";
 

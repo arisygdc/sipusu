@@ -2,26 +2,35 @@ use std::{sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use bytes::BytesMut;
 use tokio::{io, sync::RwLock};
 use crate::{connection::{SocketReader, SocketWriter}, helper::time::sys_now, message_broker::{Consumer, Event, EventListener}, protocol::{mqtt::{MqttClientPacket, PublishPacket}, subscribe::{SubAckResult, SubscribeAck}}};
-use super::{client::{Client, ClientID}, SessionController};
+use super::{client::{Client, ClientID}, storage::ClientStore, SessionController};
 
 type MutexClients = RwLock<Vec<AtomicPtr<Client>>>;
 
-pub struct Clients(Arc<MutexClients>);
+pub struct Clients{
+    list: Arc<MutexClients>,
+    storage: ClientStore,
+}
 
-impl<'lc> Clients {
-    pub fn new() -> Self {
-        Self(Arc::new(RwLock::new(Vec::new())))
+impl<'lc, 'st> Clients {
+    pub async fn new() -> Self {
+        Self{
+            list: Arc::new(RwLock::new(Vec::new())),
+            storage: ClientStore::new()
+                .await
+                .expect("cannot prepare client")
+        }
     }
 
     // FIXME: return error when equal
     /// insert sort by conn number
     pub async fn insert(&self, new_cl: Client) -> Result<(), String> {
-        let mut clients = self.0.write().await;
+        let new_clid = new_cl.clid.clone();
+        let mut clients = self.list.write().await;
 
         let mut found = clients.len();
         for (i, cval) in clients.iter().enumerate() {
             let clid = unsafe {&(*cval.load(Ordering::Acquire)).clid};
-            match new_cl.clid.cmp(clid) {
+            match new_clid.cmp(clid) {
                 std::cmp::Ordering::Equal => return Err("duplicate client id".to_string()),
                 std::cmp::Ordering::Greater => continue,
                 std::cmp::Ordering::Less => ()
@@ -35,13 +44,17 @@ impl<'lc> Clients {
         let p = Box::into_raw(new_cl);
         let new_cl = AtomicPtr::new(p);
         clients.insert(found, new_cl);
+        drop(clients);
+
+        self.storage.prepare(&new_clid).await
+            .map_err(|err| err.to_string())?;
         Ok(())
     }
 
     // TODO: Create Garbage collector
     #[allow(dead_code)]
     pub async fn remove(&self, clid: &ClientID) -> Result<(), String> {
-        let mut clients = self.0.write().await;
+        let mut clients = self.list.write().await;
         let idx = clients.binary_search_by(|c| unsafe {
                 (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
             })
@@ -54,7 +67,7 @@ impl<'lc> Clients {
     /// in action read guard from vector
     /// give you access to mutable reference on client
     pub async fn search_mut_client<R>(&self, clid: &ClientID, f: impl FnOnce(&'lc mut Client) -> R) -> Option<R> {
-        let clients = self.0.read().await;
+        let clients = self.list.read().await;
 
         let idx = clients.binary_search_by(|c| unsafe {
             (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
@@ -65,7 +78,7 @@ impl<'lc> Clients {
     }
 
     pub async fn session_exists(&self, clid: &ClientID) -> bool {
-        let clients = self.0.read().await;
+        let clients = self.list.read().await;
         clients.binary_search_by(|c| unsafe {
             let t = &(*c.load(Ordering::Acquire)).clid;
             t.cmp(clid)
@@ -77,7 +90,7 @@ impl EventListener for Clients {
     async fn listen_all<E>(&self, event: &E) 
         where E: Event + Send + Sync 
     {
-        let listeners = self.0.read().await;
+        let listeners = self.list.read().await;
         let sys_time = sys_now();
         for client in listeners.iter() {
             let cval = unsafe{&mut *client.load(Ordering::Relaxed)};
@@ -111,24 +124,35 @@ impl EventListener for Clients {
             let packet = MqttClientPacket::deserialize(&mut buffer).unwrap();
             match packet {
                 MqttClientPacket::Publish(p) 
-                    => {event.enqueue_message(p); println!("enqueue message")},
+                    => event.enqueue_message(p),
                 MqttClientPacket::Subscribe(subs) 
                     => {
-                        let result: Vec<SubAckResult> = event.subscribe_topics(subs.list, cval.clid.clone()).await;
+                        let clid = cval.clid.clone();
+                        let result: Vec<SubAckResult> = event.subscribe_topics(&subs.list, clid.clone()).await;
                         let response = SubscribeAck{ id: subs.id, subs_result: result };
                         
                         let id = response.id;
-                        let result = cval.write_all(&mut response.serialize()).await;
-                        if let Err(e) = result {
+                        let mut srz = response.serialize();
+
+                        let (response, store) = tokio::join!(
+                            cval.write_all(&mut srz),
+                            self.storage.subscribe(&clid, &subs.list)
+                        );
+                        if let Err(e) = response {
                             println!("[{}] {}", id, e.to_string());
                         }
+
+                        if let Err(e) = store {
+                            println!("[{}] {}", id, e.to_string());
+                        }
+                        
                     }
             }
         }
     }
 
     async fn count_listener(&self) -> usize {
-        let listener = self.0.read().await;
+        let listener = self.list.read().await;
         listener.len()
     }
 }
@@ -151,6 +175,6 @@ impl Consumer for Clients {
 
 impl Clone for Clients {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self { list: self.list.clone(), storage: self.storage.clone() }
     }
 }

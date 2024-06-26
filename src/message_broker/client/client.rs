@@ -1,7 +1,6 @@
 use std::{fmt::Display, io, net::SocketAddr, sync::{atomic::AtomicU64, Arc}};
 use tokio::sync::Mutex;
 use crate::{connection::{handshake::MqttConnectedResponse, line::SocketConnection, ConnectionID, SocketReader, SocketWriter}, helper::time::sys_now, protocol::v5::connack::ConnackPacket};
-
 use super::SessionController;
 
 extern crate tokio;
@@ -134,7 +133,7 @@ pub struct Client {
     protocol_level: u8,
     ttl: u64,
     keep_alive: u16,
-    expr_interval: u32
+    expr_interval: u32,
 }
 
 pub struct UpdateClient {
@@ -147,7 +146,7 @@ pub struct UpdateClient {
 
 // keepalive min value: 60
 impl Client {
-    pub fn new(
+    pub async fn new(
         conid: ConnectionID,
         socket: SocketConnection,
         addr: SocketAddr,

@@ -21,7 +21,7 @@ pub const SHARED_SUBS_SUPPORT: bool = false;
 
 pub trait Event {
     fn enqueue_message(&self, msg: PublishPacket);
-    fn subscribe_topics(&self, sub: Vec<Subscribe>, con_id: ClientID) -> impl std::future::Future<Output = Vec<SubAckResult>> + Send;
+    fn subscribe_topics(&self, sub: &[Subscribe], con_id: ClientID) -> impl std::future::Future<Output = Vec<SubAckResult>> + Send;
 }
 
 pub trait EventListener {

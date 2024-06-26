@@ -78,7 +78,7 @@ impl Proxy {
             srv_var.keep_alive,
             srv_var.expr_interval,
             srv_var.protocol_level,
-        );
+        ).await;
 
         self.broker.register(client, |c| {
             c.connack(&response)

@@ -30,7 +30,7 @@ impl Event for EventHandler {
         self.message_queue.append(msg)
     }
 
-    async fn subscribe_topics(&self, subs: Vec<Subscribe>, con_id: ClientID) -> Vec<SubAckResult> {
+    async fn subscribe_topics(&self, subs: &[Subscribe], con_id: ClientID) -> Vec<SubAckResult> {
         let mut res: Vec<SubAckResult> = Vec::with_capacity(subs.len());
         for sub in subs {
             self.router.insert(&sub.topic, con_id.clone()).await;

@@ -36,7 +36,7 @@ async fn app() {
 async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, (JoinHandle<()>, JoinHandle<()>)) {
     println!("running mediator");
 
-    let mut mediator: BrokerMediator = BrokerMediator::new();
+    let mut mediator: BrokerMediator = BrokerMediator::new().await;
     let broker_task = mediator.join_handle();
     let handler = Proxy::new(mediator).await.unwrap();
     let server = Server::new(None, handler).await;

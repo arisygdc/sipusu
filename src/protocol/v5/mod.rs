@@ -3,6 +3,7 @@ pub mod connack;
 pub mod subscribe;
 pub mod subsack;
 pub mod publish;
+pub mod puback;
 use bytes::{Buf, BufMut, BytesMut};
 
 

@@ -6,19 +6,19 @@ use super::RemainingLength;
 #[derive(Debug)]
 pub struct SubscribePacket {
     pub id: u16,
-    pub list: Vec<Subscribe>
+    pub list: Vec<Subscribe>,
 }
 
 #[derive(Debug)]
 pub struct Subscribe {
     pub topic: String,
-    pub qos: u8 
+    pub max_qos: u8 
 }
 
 impl SubscribePacket {
-    #[cfg(test)]
-    fn deserialize(buffer: &mut BytesMut) -> Result<Self, &'static str> {
-        if buffer.get_u8() != 0x82 {
+    pub fn decode(buffer: &mut BytesMut) -> Result<Self, &'static str> {
+        let header = buffer.get_u8();
+        if  (header >> 0x04) != 0x08 {
             return Err("invalid header");
         }
         Self::skip_header(buffer)
@@ -41,8 +41,8 @@ impl SubscribePacket {
             let topic = String::from_utf8(topic_filter_bytes.into())
                 .map_err(|_| "Invalid UTF-8 in topic filter")?;
 
-            let qos = buffer.get_u8() & 0x3;
-            subscriptions.push(Subscribe { topic, qos });
+            let max_qos = buffer.get_u8() & 0x3;
+            subscriptions.push(Subscribe { topic, max_qos });
         }
         
         Ok(SubscribePacket {
@@ -101,11 +101,11 @@ mod tests {
                     list: vec![
                         Subscribe {
                             topic: "sensor/temperature".to_string(),
-                            qos: 1,
+                            max_qos: 1,
                         },
                         Subscribe {
                             topic: "sensor/humidity".to_string(),
-                            qos: 2,
+                            max_qos: 2,
                         },
                     ],
                 },
@@ -123,7 +123,7 @@ mod tests {
                     id: 1, 
                     list: vec![Subscribe {
                         topic: String::from("test/topic"),
-                        qos: 0
+                        max_qos: 0
                     }]
                 }
             }
@@ -131,14 +131,14 @@ mod tests {
 
         for test in test_table {
             let mut buf = test.raw;
-            let deserialized = SubscribePacket::deserialize(&mut buf).expect("Deserialization failed");
+            let deserialized = SubscribePacket::decode(&mut buf).expect("Deserialization failed");
             println!("deserialize {:?}, expected {:?}", deserialized, test.exp);
 
             assert_eq!(deserialized.id, test.exp.id);
             assert_eq!(deserialized.list.len(), test.exp.list.len());
             for (deserialized_sub, expected_sub) in deserialized.list.iter().zip(test.exp.list.iter()) {
                 assert_eq!(deserialized_sub.topic, expected_sub.topic);
-                assert_eq!(deserialized_sub.qos, expected_sub.qos);
+                assert_eq!(deserialized_sub.max_qos, expected_sub.max_qos);
             }
             
         }

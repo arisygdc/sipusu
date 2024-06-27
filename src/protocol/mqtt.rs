@@ -1,6 +1,23 @@
 use bytes::{Buf, BufMut, BytesMut};
 
-use super::subscribe::SubscribePacket;
+use super::{subscribe::SubscribePacket, v5::{publish::PublishPacket as PubV5, subscribe::SubscribePacket as SubV5}};
+
+pub enum V5ClientPacket {
+    Publish(PubV5),
+    Subscribe(SubV5)
+}
+
+impl V5ClientPacket {
+    pub fn decode(buffer: &mut BytesMut) -> Result<Self, String> {
+        let ctrl_packet = buffer[0] >> 4;
+        let pv = match ctrl_packet {
+            0x08 => Self::Subscribe(SubV5::decode(buffer)?),
+            0x03 => Self::Publish(PubV5::decode(buffer)?),
+            _ => return Err(String::from("invalid header"))
+        };
+        Ok(pv)
+    }
+}
 
 pub enum MqttClientPacket {
     Publish(PublishPacket),

@@ -1,17 +1,38 @@
+#![allow(dead_code)]
 use bytes::{BytesMut, BufMut};
 use super::{encode_utf8_string, RemainingLength};
 
 #[derive(Debug)]
+pub enum PubACKType {
+    PubAck,
+    PubRec,
+    PubRel,
+    PubComp
+}
+
+impl PubACKType {
+    fn code(&self) -> u8 {
+        match self {
+            PubACKType::PubAck => 0x40,
+            PubACKType::PubRec => 0x50,
+            PubACKType::PubRel => 0x60,
+            PubACKType::PubComp => 0x70
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct PubackPacket {
-    packet_id: u16,
-    reason_code: u8,
-    properties: Option<Properties>,
+    pub packet_type: PubACKType,
+    pub packet_id: u16,
+    pub reason_code: u8,
+    pub properties: Option<Properties>,
 }
 
 #[derive(Debug)]
 pub struct Properties {
-    reason_string: Option<String>,
-    user_properties: Option<Vec<(String, String)>>,
+    pub reason_string: Option<String>,
+    pub user_properties: Option<Vec<(String, String)>>,
 }
 
 impl PubackPacket {
@@ -30,7 +51,8 @@ impl PubackPacket {
         let (remaining_length, _) = remaining_length.split_at(rmlen_size);
 
         // Fixed header
-        buffer.put_u8(0x40); // Packet type and flags
+        let header = self.packet_type.code();
+        buffer.put_u8(header); // Packet type and flags
 
         // Remaining length
         buffer.put(remaining_length);
@@ -80,6 +102,7 @@ mod tests {
         };
 
         let packet = PubackPacket {
+            packet_type: PubACKType::PubAck,
             packet_id: 1234,
             reason_code: 0,
             properties: Some(properties),

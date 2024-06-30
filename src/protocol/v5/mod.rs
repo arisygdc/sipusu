@@ -7,6 +7,44 @@ pub mod puback;
 use bytes::{Buf, BufMut, BytesMut};
 
 
+#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug)]
+pub enum ServiceLevel {
+    QoS0, QoS1, QoS2
+}
+
+impl ServiceLevel {
+    pub fn code(&self) -> u8 {
+        match self {
+            Self::QoS0 => 0x00,
+            Self::QoS1 => 0x01,
+            Self::QoS2 => 0x02
+        }
+    }
+
+    pub fn max_qos() -> u8 {
+        0x02
+    }
+}
+
+impl Default for ServiceLevel {
+    fn default() -> Self {
+        Self::QoS0
+    }
+}
+
+impl TryFrom<u8> for ServiceLevel {
+    type Error = String;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x00 => Ok(Self::QoS0),
+            0x01 => Ok(Self::QoS1),
+            0x02 => Ok(Self::QoS2),
+            _ => Err(String::from("unknown service level"))
+        }
+    }
+}
+
 pub struct RemainingLength;
 
 impl RemainingLength {

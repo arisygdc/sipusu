@@ -50,31 +50,13 @@ impl SubscribePacket {
             list: subscriptions,
         })
     }
-
-    fn read_remaining_length(buffer: &mut BytesMut) -> Result<usize, &'static str> {
-        let mut multiplier = 1;
-        let mut value = 0;
-        for _ in 0..2 {
-            let encoded_byte = buffer.get_u8();
-            value += ((encoded_byte & 127) as usize) * multiplier;
-            if (encoded_byte & 128) == 0 {
-                break;
-            }
-
-            multiplier *= 128;
-            if multiplier > 128 * 128 * 128 {
-                return Err("Malformed Remaining Length");
-            }
-        }
-        Ok(value)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use bytes::BytesMut;
 
-    use crate::protocol::v5::{subsack::{ServiceLevel, SubsAck}, subscribe::{Subscribe, SubscribePacket}};
+    use crate::protocol::v5::subscribe::{Subscribe, SubscribePacket};
 
     #[test]
     fn test_subscribe_packet_deserialization() {
@@ -142,19 +124,5 @@ mod tests {
             }
             
         }
-    }
-
-    #[test]
-    fn serialize_suback() {
-        let ack = SubsAck {
-            id: 8,
-            subs_result: vec![Ok(ServiceLevel::QoS2)]
-        };
-
-        let serialized = ack.serialize();
-        assert_eq!(
-            serialized.as_ref(),
-            vec![0x90, 0x03, 0x0, 0x8, 0x2].as_slice()
-        )
     }
 }

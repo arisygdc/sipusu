@@ -1,28 +1,31 @@
-use bytes::{BytesMut, Buf};
+#![allow(dead_code)]
+use bytes::{Buf, BytesMut};
 
-use super::{decode_binary_data, decode_string_pair, decode_utf8_string, RemainingLength};
+use super::{decode_binary_data, decode_string_pair, decode_utf8_string, RemainingLength, ServiceLevel};
 
-#[derive(Debug, PartialEq)]
+#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, Default)]
 pub struct PublishPacket {
-    dup: bool,
-    qos: u8,
-    retain: bool,
-    topic: String,
-    packet_id: Option<u16>,
-    payload: Vec<u8>,
-    properties: Option<Properties>,
+    pub dup: bool,
+    pub qos: ServiceLevel,
+    pub retain: bool,
+    pub topic: String,
+    pub packet_id: Option<u16>,
+    pub payload: Vec<u8>,
+    pub properties: Option<Properties>,
 }
 
-#[derive(Debug, PartialEq)]
+#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, Default)]
 pub struct Properties {
-    payload_format_indicator: Option<u8>,
-    message_expiry_interval: Option<u32>,
-    topic_alias: Option<u16>,
-    response_topic: Option<String>,
-    correlation_data: Option<Vec<u8>>,
-    user_properties: Option<Vec<(String, String)>>,
-    subscription_identifier: Option<Vec<u32>>,
-    content_type: Option<String>,
+    pub payload_format_indicator: Option<u8>,
+    pub message_expiry_interval: Option<u32>,
+    pub topic_alias: Option<u16>,
+    pub response_topic: Option<String>,
+    pub correlation_data: Option<Vec<u8>>,
+    pub user_properties: Option<Vec<(String, String)>>,
+    pub subscription_identifier: Option<Vec<u32>>,
+    pub content_type: Option<String>,
 }
 
 impl PublishPacket {
@@ -39,7 +42,7 @@ impl PublishPacket {
         }
 
         let dup = (header & 0x08) != 0;
-        let qos = (header & 0x06) >> 1;
+        let qos = ServiceLevel::try_from((header & 0x06) >> 1)?;
         let retain = (header & 0x01) != 0;
 
         // Remaining length
@@ -55,21 +58,12 @@ impl PublishPacket {
         let properties = decode_properties(buffer)?;
 
         // Packet Identifier
-        let packet_id = 
-        if qos > 0 {
-            if buffer.len() < 2 {
-                return Err("Buffer too short for packet identifier".to_string());
-            }
-            Some(buffer.get_u16())
-        } else {
-            None
+        let packet_id = match qos.code() > 0 {
+            true => Some(buffer.get_u16()),
+            false => None
         };
 
         // Payload
-        if buffer.len() < 1 {
-            return Err("Buffer too short for payload".to_string());
-        }
-
         let payload = buffer.to_vec();
 
         Ok(PublishPacket {
@@ -131,6 +125,31 @@ fn decode_properties(buffer: &mut BytesMut) -> Result<Option<Properties>, String
     Ok(Some(properties))
 }
 
+pub struct FwdPublish {
+    pub dup: bool,
+    pub qos: ServiceLevel,
+    pub retain: bool,
+    pub topic: String,
+    pub packet_id: Option<u16>,
+    pub payload: Vec<u8>,
+    pub properties: Option<Properties>,     
+}
+
+pub struct FwdProperties {
+    pub payload_format_indicator: Option<u8>,
+    pub message_expiry_interval: Option<u32>,
+    pub user_properties: Option<Vec<(String, String)>>,
+    pub content_type: Option<String>,
+}
+
+impl FwdPublish {
+    pub fn encode(&self) -> Result<BytesMut, String> {
+        let buffer = BytesMut::with_capacity(512);
+
+        Ok(buffer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,7 +193,7 @@ mod tests {
 
         let expected_packet = PublishPacket {
             dup: false,
-            qos: 0,
+            qos: ServiceLevel::QoS0,
             retain: false,
             topic: "topic".to_string(),
             packet_id: None,

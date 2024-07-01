@@ -4,8 +4,8 @@ pub mod subscribe;
 pub mod subsack;
 pub mod publish;
 pub mod puback;
+pub mod malform;
 use bytes::{Buf, BufMut, BytesMut};
-
 
 #[cfg_attr(test, derive(PartialEq))]
 #[derive(Debug)]

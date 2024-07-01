@@ -193,7 +193,8 @@ impl PublishPacket {
             }
         };
 
-        let mut len = self.topic.len() + prop.len() + self.payload.len();
+        // topic leng | topic | prop with leng | payload
+        let mut len = 2 + self.topic.len() + prop.len() + self.payload.len();
         if self.packet_id.is_some() {
             len += 2;
         }
@@ -301,13 +302,15 @@ mod tests {
             retain: false,
             topic: "topic".to_string(),
             packet_id: Some(12345),
-            payload: b"hello".to_vec(),
+            payload: b"Hello mqtt".to_vec(),
             properties: Some(prop),
         };
 
         let mut encoded = packet.encode().unwrap();
         let decoded = PublishPacket::decode(&mut encoded).unwrap();
 
+        println!("raw: {:?}", packet);
+        println!("res: {:?}", decoded);
         assert_eq!(packet, decoded)
         
     }

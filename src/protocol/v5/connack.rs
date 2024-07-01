@@ -1,10 +1,6 @@
-#![allow(dead_code)]
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{BufMut, BytesMut};
 
 use super::{
-    decode_binary_data, 
-    decode_string_pair, 
-    decode_utf8_string,
     encode_binary_data,
     encode_utf8_string,
     RemainingLength
@@ -43,6 +39,8 @@ pub struct Properties {
 impl ConnackPacket {
     #[cfg(test)]
     pub fn decode(buffer: &mut BytesMut) -> Result<Self, String> {
+        use bytes::Buf;
+        
         {
             if buffer.len() < 4 {
                 return Err("Buffer too short".to_string());
@@ -192,7 +190,15 @@ impl ConnackPacket {
     }
 }
 
+#[cfg(test)]
 fn decode_properties(buffer: &mut BytesMut) -> Result<Option<Properties>, String> {
+    use super::{
+        decode_binary_data, 
+        decode_string_pair, 
+        decode_utf8_string
+    };
+    use bytes::Buf;
+
     if buffer.is_empty() {
         return Ok(None);
     }
@@ -261,6 +267,8 @@ fn decode_properties(buffer: &mut BytesMut) -> Result<Option<Properties>, String
 
 #[cfg(test)]
 mod tests {
+    use bytes::Buf;
+
     use super::*;
 
     #[test]

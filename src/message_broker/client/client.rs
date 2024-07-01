@@ -1,6 +1,15 @@
-use std::{fmt::Display, io, net::SocketAddr, sync::{atomic::AtomicU64, Arc}};
+use std::{fmt::Display, io, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
-use crate::{connection::{handshake::MqttConnectedResponse, line::SocketConnection, ConnectionID, SocketReader, SocketWriter}, helper::time::sys_now, protocol::v5::connack::ConnackPacket};
+use crate::{
+    connection::{
+        handshake::MqttConnectedResponse, 
+        line::SocketConnection, 
+        ConnectionID, SocketReader, 
+        SocketWriter
+    }, 
+    helper::time::sys_now, 
+    protocol::v5::connack::ConnackPacket
+};
 use super::SessionController;
 
 extern crate tokio;
@@ -122,14 +131,13 @@ impl Socket {
     }
 }
 
-#[derive(Debug)]
+// #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Client {
     pub(super) conid: ConnectionID,
     pub clid: ClientID,
     pub(super) addr: SocketAddr,
     socket: Socket,
-    dead_on: AtomicU64,
     protocol_level: u8,
     ttl: u64,
     keep_alive: u16,
@@ -164,7 +172,6 @@ impl Client {
             clid,
             ttl: sys_now() + keep_alive as u64,
             expr_interval,
-            dead_on: AtomicU64::new(0),
             keep_alive,
             protocol_level,
         }
@@ -222,7 +229,7 @@ impl SessionController for Client {
 }
 
 impl SocketWriter for Client {
-    async fn write_all(&mut self, buffer: &mut [u8]) -> tokio::io::Result<()> {
+    async fn write_all(&mut self, buffer: &[u8]) -> tokio::io::Result<()> {
         let mut guard = self.socket.inner.lock().await;
         guard.write_all(buffer).await
     }

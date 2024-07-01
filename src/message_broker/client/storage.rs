@@ -3,7 +3,7 @@ use std::{env, path::{Path, PathBuf}};
 use bytes::{BufMut, BytesMut};
 use tokio::{fs::{create_dir, OpenOptions}, io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader}};
 
-use crate::protocol::subscribe::Subscribe;
+use crate::protocol::v5::subscribe::Subscribe;
 
 use super::{client::ClientID, DATA_STORE};
 
@@ -53,7 +53,7 @@ impl ClientStore {
         let mut buffer = BytesMut::with_capacity(20 * topics.len());
         topics.iter().for_each(|item| {
             buffer.put_u8(0x1);
-            buffer.put_u8(item.qos);
+            buffer.put_u8(item.max_qos);
             buffer.put(item.topic.as_bytes());
             buffer.put_u8(0xA);
         });
@@ -115,7 +115,7 @@ impl ClientStore {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::subscribe::Subscribe;
+    use crate::protocol::v5::subscribe::Subscribe;
 
     use super::{ClientID, ClientStore};
 
@@ -139,13 +139,13 @@ mod tests {
         
         let v = vec![
             Subscribe{
-                qos: 0x1,
+                max_qos: 0x1,
                 topic: "topic/a".to_owned()
             },Subscribe{
-                qos: 0x1,
+                max_qos: 0x1,
                 topic: "topic/b".to_owned()
             }, Subscribe{
-                qos: 0x1,
+                max_qos: 0x1,
                 topic: "topic/c".to_owned()
             },
         ];

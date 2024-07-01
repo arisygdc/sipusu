@@ -7,7 +7,6 @@ use super::{errors::{ConnError, ErrorKind}, handshake::MqttConnectRequest, Socke
 
 pub type SecuredStream = TlsStream<TcpStream>;
 
-#[derive(Debug)]
 pub enum SocketConnection {
     Secure(SecuredStream),
     Plain(TcpStream)

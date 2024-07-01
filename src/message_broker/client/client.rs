@@ -1,9 +1,9 @@
-use std::{fmt::Display, io, net::SocketAddr, sync::Arc};
-use tokio::sync::Mutex;
+use std::{fmt::Display, io, net::SocketAddr};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf}, net::TcpStream};
 use crate::{
     connection::{
         handshake::MqttConnectedResponse, 
-        line::SocketConnection, 
+        line::{SecuredStream, SocketConnection}, 
         ConnectionID, SocketReader, 
         SocketWriter
     }, 
@@ -120,24 +120,44 @@ impl PartialOrd for ClientID {
     }
 }
 
-#[derive(Debug)]
-pub struct Socket {
-    inner: Arc<Mutex<SocketConnection>>
+enum SocketInner<S, P> {
+    Secured(S),
+    Plain(P)
 }
 
-impl Socket {
+pub struct Socket<S, P> {
+    r: SocketInner<ReadHalf<S>, ReadHalf<P>>,
+    w: SocketInner<WriteHalf<S>, WriteHalf<P>>
+}
+
+impl Socket<SecuredStream, TcpStream> {
     fn new(socket: SocketConnection) -> Self {
-        Self { inner: Arc::new(Mutex::new(socket)) }
+        match socket {
+            SocketConnection::Plain(p) => {
+                let (r, w) = tokio::io::split(p);
+                Socket {
+                    r: SocketInner::Plain(r),
+                    w: SocketInner::Plain(w),
+                }
+            },
+            SocketConnection::Secure(s) => {
+                let (r, w) = tokio::io::split(s);
+                Socket {
+                    r: SocketInner::Secured(r),
+                    w: SocketInner::Secured(w),
+                }
+            }
+        }
     }
 }
 
-// #[derive(Debug)]
+
 #[allow(dead_code)]
 pub struct Client {
     pub(super) conid: ConnectionID,
     pub clid: ClientID,
     pub(super) addr: SocketAddr,
-    socket: Socket,
+    socket: Socket<SecuredStream, TcpStream>,
     protocol_level: u8,
     ttl: u64,
     keep_alive: u16,
@@ -163,7 +183,7 @@ impl Client {
         expr_interval: u32,
         protocol_level: u8
     ) -> Self {
-        let socket = Socket { inner: Arc::new(Mutex::new(socket)) };
+        let socket = Socket::new(socket);
         let keep_alive = keep_alive.max(60);
         Self {
             conid,
@@ -230,15 +250,19 @@ impl SessionController for Client {
 
 impl SocketWriter for Client {
     async fn write_all(&mut self, buffer: &[u8]) -> tokio::io::Result<()> {
-        let mut guard = self.socket.inner.lock().await;
-        guard.write_all(buffer).await
+        match &mut self.socket.w {
+            SocketInner::Plain(p) => p.write_all(buffer).await,
+            SocketInner::Secured(s) => s.write_all(buffer).await
+        }
     }
 }
 
 impl SocketReader for Client {
     async fn read(&mut self, buffer: &mut [u8]) -> tokio::io::Result<usize> {
-        let mut guard = self.socket.inner.lock().await;
-        guard.read(buffer).await
+        match &mut self.socket.r {
+            SocketInner::Plain(p) => p.read(buffer).await,
+            SocketInner::Secured(s) => s.read(buffer).await
+        }
     }
 }
 

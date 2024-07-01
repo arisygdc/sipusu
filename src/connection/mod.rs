@@ -26,5 +26,5 @@ pub trait SocketReader {
 }
 
 pub trait SocketWriter {
-    fn write_all(&mut self, buffer: &mut [u8]) -> impl std::future::Future<Output = io::Result<()>> + Send;
+    fn write_all(&mut self, buffer: &[u8]) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }

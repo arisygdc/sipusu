@@ -23,8 +23,7 @@ impl SocketReader for SocketConnection {
 }
 
 impl SocketWriter for SocketConnection {
-    
-    async fn write_all(&mut self, buffer: &mut [u8]) -> tokio::io::Result<()> {
+    async fn write_all(&mut self, buffer: &[u8]) -> tokio::io::Result<()> {
         match self {
             Self::Plain(p) => p.write_all(&buffer).await,
             Self::Secure(s) => s.write_all(&buffer).await

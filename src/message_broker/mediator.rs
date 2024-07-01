@@ -1,11 +1,19 @@
 use std::{sync::Arc, time::Duration};
 use tokio::{select, signal, sync::broadcast::{self, Receiver, Sender}, task::JoinHandle, time};
-use crate::{ds::{linked_list::List, trie::Trie}, protocol::mqtt::PublishPacket};
-use super::{client::{client::{Client, ClientID, UpdateClient}, clients::Clients}, provider::EventHandler, Consumer, Event, EventListener, Messanger};
+use crate::{ds::{linked_list::List, trie::Trie}, protocol::v5};
+use super::{
+    client::{
+        client::{Client, ClientID, UpdateClient}, 
+        clients::Clients
+    }, messenger::{
+        distributor::MessageDistributor, 
+        DistMsgStrategy
+    }, provider::EventHandler, ClientReqHandle, EventListener, Forwarder, Message, Messanger
+};
 
 pub struct BrokerMediator {
     clients: Clients,
-    message_queue: Arc<List<PublishPacket>>,
+    message_queue: Arc<List<Message>>,
     router: Arc<Trie<ClientID>>,
 }
 
@@ -25,7 +33,6 @@ impl<'cp> BrokerMediator {
         let clid = new_cl.clid.clone();
         println!("[register] client {:?}", clid);
         self.clients.insert(new_cl).await?;
-        println!("inserted");
         let result = self.clients.search_mut_client(&clid, callback)
             .await
             .ok_or(format!("cannot inserting client {}", clid))?;
@@ -66,23 +73,36 @@ impl<'cp> BrokerMediator {
             self.message_queue.clone(), 
             self.router.clone()
         );
+
+        let msg_dist = MessageDistributor::new();
         
-        let (tx_sigkill, rx_sigkill) = broadcast::channel::<()>(1);
-        let t1 = tokio::task::spawn(event_listener(clients.clone(), action.clone(), rx_sigkill));
-        let t2 = tokio::task::spawn(observer_message(action.clone(), clients.clone(), tx_sigkill));
+        let (tx_sigkill, rx_sigkill) = broadcast::channel::<bool>(1);
+        let t1 = tokio::task::spawn(event_listener(
+            clients.clone(), 
+            action.clone(), 
+            rx_sigkill
+        ));
+
+        let t2 = tokio::task::spawn(observer_message(
+            action.clone(), 
+            clients.clone(), 
+            msg_dist,
+            tx_sigkill
+        ));
         (t1, t2)
     }
 }
 
-async fn event_listener<L, E>(trig: L, event: E, mut rx_sigkill: Receiver<()>) 
+async fn event_listener<L, E>(trig: L, event: E, mut rx_sigkill: Receiver<bool>) 
     where 
-        L: EventListener + Send + Sync,
-        E: Event + Send + Sync
+        L: EventListener + Send + Sync + 'static,
+        E: ClientReqHandle + Send + Sync
 {
     println!("[listener] start");
     'listener: loop {
         select! {
-            _ = rx_sigkill.recv() => {
+            sig = rx_sigkill.recv() => {
+                println!("signal kill {:?}", sig);
                 println!("trying to shutdown");
                 break 'listener;
             },
@@ -98,32 +118,63 @@ async fn event_listener<L, E>(trig: L, event: E, mut rx_sigkill: Receiver<()>)
     println!("[listener] shutdown");
 }
 
-async fn observer_message<M, S>(provider: M, forwarder: S, tx_sigkill: Sender<()>)
-    where 
-        M: Messanger + Send + Sync,
-        S: Consumer + Send + Sync
+async fn observer_message<M, S, D>(
+    provider: M, 
+    forwarder: S,
+    dist: D,
+    tx_sigkill: Sender<bool>
+) where 
+    S: Forwarder + Send + Sync + Clone + 'static,
+    D: DistMsgStrategy<S> + Send + Sync,
+    M: Messanger + Send + Sync,
 {
     println!("[observer] start");
     'observer: loop {
         select! {
             _ = signal::ctrl_c() => {
-                tx_sigkill.send(()).unwrap();
+                println!("send shutdown signal");
+                tx_sigkill.send(true).unwrap();
                 break 'observer;
             },
-            _ = async {
-                if let Some(packet) = provider.dequeue_message() {
+            msg = async {
+                if let Some(msg) = provider.dequeue_message() {
                     println!("routing");
-                    let to = provider.route(&packet.topic).await;
+
+                    let to = provider.route(&msg.packet.topic).await;
                     println!("[to] {:?}", to);
                     let dst = match to {
-                        None => return,
-                        Some(dst) => dst[0].clone()
+                        None => return Err(format!("no subscriber for topic {}", &msg.packet.topic)),
+                        Some(dst) => dst
                     };
-                    // TODO: QoS
-                    forwarder.pubish(dst, packet).await.unwrap();
+                    return Ok((msg, dst));
                 }
                 time::sleep(Duration::from_millis(10)).await;
-            } => ()
+                Err(String::from("no message"))
+            } => {
+                let msg = match msg {
+                    Ok(v) => v,
+                    Err(_) => continue 'observer
+                };
+
+                let cl = forwarder.clone();
+                let (msg, subs) = msg;
+                let packet = msg.packet;
+                let publisher = msg.publisher;
+
+                println!("sending message");
+                if let v5::ServiceLevel::QoS0 = &packet.qos {
+                    let _ = dist.qos0(cl, subs, packet);
+                    continue 'observer
+                }
+
+                if let Some(p) = publisher {
+                    let _ = match &packet.qos {
+                        v5::ServiceLevel::QoS1 => { dist.qos1(cl, p, subs, packet) },
+                        v5::ServiceLevel::QoS2 => { dist.qos2(cl, p, subs, packet)},
+                        _ => continue 'observer 
+                    };
+                }  
+            }
         }
     }
     println!("[observer] shutdown");

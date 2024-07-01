@@ -29,7 +29,6 @@ impl<'lc, 'st> Clients {
         }
     }
 
-    // FIXME: return error when equal
     /// insert sort by conn number
     pub async fn insert(&self, new_cl: Client) -> Result<(), String> {
         let new_clid = new_cl.clid.clone();

@@ -1,10 +1,7 @@
 use std::{env, path::{Path, PathBuf}};
-
 use bytes::{BufMut, BytesMut};
-use tokio::{fs::{create_dir, OpenOptions}, io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader}};
-
+use tokio::{fs::{create_dir, File, OpenOptions}, io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader}};
 use crate::protocol::v5::subscribe::Subscribe;
-
 use super::{client::ClientID, DATA_STORE};
 
 #[derive(Debug, Clone)]
@@ -46,17 +43,25 @@ impl ClientStore {
     // TODO: search if exists
     pub async fn subscribe(&self, clid: &ClientID, topics: &[Subscribe]) -> io::Result<()> {
         let mut fopt = OpenOptions::new();
-        let mut f = fopt
+        let f = fopt
             .append(true)
             .open(format!("{}/{}/subscribed", self.path.display(), clid))
             .await?;
         let mut buffer = BytesMut::with_capacity(20 * topics.len());
-        topics.iter().for_each(|item| {
+        let mut reader = BufReader::new(f);
+        for sub in topics.iter() {
+            // FIXME
+            if disk_search(&mut reader, &sub.topic).await.is_some() {
+                unimplemented!()
+            }
+
             buffer.put_u8(0x1);
-            buffer.put_u8(item.max_qos);
-            buffer.put(item.topic.as_bytes());
+            buffer.put_u8(sub.max_qos);
+            buffer.put(sub.topic.as_bytes());
             buffer.put_u8(0xA);
-        });
+        }
+
+        let mut f = reader.into_inner();
         f.seek(io::SeekFrom::End(0)).await?;
         f.write_all(&buffer).await
     }
@@ -70,47 +75,53 @@ impl ClientStore {
             .await?;
 
         let mut reader = BufReader::new(f);
-        let mut buf = BytesMut::zeroed(1024);
+        let target = disk_search(&mut reader, topic)
+            .await
+            .ok_or(io::Error::new(
+                io::ErrorKind::NotFound, 
+                format!("cannot find topic {}", topic)
+            ))?;
+        
+        let mut writer = reader.into_inner();
+        writer.seek(io::SeekFrom::Start(target as u64)).await?;
+        writer.write(&[0x0]).await?;
+        Ok(())
+    }
+}
+
+async fn disk_search(reader: &mut BufReader<File>, topic: &str) -> Option<usize> {
+    let mut buf = BytesMut::zeroed(1024);
         let mut target_seek = 0;
         // TODO: check when looping
         while let Ok(n) = reader.read(&mut buf).await {
             if n == 0 {
                 break;
             }
-            
-            {
-                let r_buf = buf.split_to(n);
-                target_seek += n;
-                let mut c = 0;
-                for i in 0..n {
-                    let is_eq = r_buf[i] == 0xA;
-                    if !is_eq {
-                        continue;
-                    }
-
-                    let ok = r_buf[c+2..i].eq(topic.as_bytes());
-                    if !ok {
-                        c = i+1;
-                        continue;
-                    }
-                    
-                    let t = target_seek - n;
-                    target_seek = t + c;
-                    println!("found {}", target_seek);
-                    let mut f = reader.into_inner();
-                    f.seek(io::SeekFrom::Start(target_seek as u64)).await?;
-                    f.write(&[0x0]).await?;
-                    return Ok(());
+    
+            let r_buf = buf.split_to(n);
+            target_seek += n;
+            let mut c = 0;
+            for i in 0..n {
+                let is_eq = r_buf[i] == 0xA;
+                if !is_eq {
+                    continue;
                 }
+
+                let ok = r_buf[c+2..i].eq(topic.as_bytes());
+                if !ok {
+                    c = i+1;
+                    continue;
+                }
+                
+                let t = target_seek - n;
+                target_seek = t + c;
+                return Some(target_seek);
             }
+    
             buf.reserve(n);
             unsafe{buf.set_len(0)};
         }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound, 
-            format!("cannot find topic {}", topic))
-        )
-    }
+    None
 }
 
 #[cfg(test)]

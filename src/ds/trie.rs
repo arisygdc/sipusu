@@ -3,21 +3,21 @@ use tokio::sync::RwLock;
 
 // TODO: wilcard
 pub struct Trie<T> 
-    where T: Eq + Clone
+    where T: PartialEq + Clone
 {
     root: AtmcNode<T>
 }
 
 type AtmcNode<T> = AtomicPtr<TrieNode<T>>;
 struct TrieNode<T> 
-    where T: Eq + Clone
+    where T: PartialEq + Clone
 {
     child: HashMap<String, AtmcNode<T>>,
     subscribers: RwLock<Vec<T>>
 }
 
 impl<T> TrieNode<T> 
-    where T: Eq + Clone
+    where T: PartialEq + Clone
 {
     fn new() -> Self {
         Self {
@@ -38,7 +38,7 @@ impl<T> TrieNode<T>
 }
 
 impl<T> Trie<T> 
-    where T: Eq + Clone
+    where T: PartialEq + Clone
 {
     pub fn new() -> Self {
         Trie {

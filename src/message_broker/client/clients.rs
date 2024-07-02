@@ -1,18 +1,13 @@
-use std::{sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
-use bytes::BytesMut;
+use std::sync::{atomic::{AtomicPtr, Ordering}, Arc};
 use tokio::{io, sync::RwLock};
 use crate::{
-    connection::{SocketReader, SocketWriter}, 
-    helper::time::sys_now, 
-    message_broker::{ClientReqHandle, EventListener, Forwarder, Message}, 
-    protocol::{
-        mqtt::{ClientPacketV5, PING_RES}, 
-        v5::subsack::SubsAck
-    }
+    connection::SocketWriter, 
+    message_broker::{Forwarder, SendStrategy}, protocol::v5::puback::{PubACKType, PubackPacket}
 };
-use super::{client::{Client, ClientID}, storage::ClientStore, SessionController};
+use super::{client::{Client, ClientID}, storage::ClientStore};
 
-type MutexClients = RwLock<Vec<AtomicPtr<Client>>>;
+pub type AtomicClient = Arc<AtomicPtr<Client>>;
+type MutexClients = RwLock<Vec<AtomicClient>>;
 
 pub struct Clients{
     list: Arc<MutexClients>,
@@ -50,6 +45,7 @@ impl<'lc, 'st> Clients {
         let new_cl = Box::new(new_cl);
         let p = Box::into_raw(new_cl);
         let new_cl = AtomicPtr::new(p);
+        let new_cl = Arc::new(new_cl);
         clients.insert(found, new_cl);
         drop(clients);
 
@@ -95,82 +91,72 @@ impl<'lc, 'st> Clients {
             t.cmp(clid)
         }).is_ok()
     }
+
+    pub async unsafe fn get_client(&self, clid: &ClientID) -> Option<AtomicClient> {
+        let clients = self.list.read().await;
+        let idx = clients.binary_search_by(|c| {
+            (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
+        }).ok()?;
+
+        Some(clients[idx].clone())
+    }
 }
 
-impl EventListener for Clients {
-    async fn listen_all<E>(&self, handle: &E) 
-        where E: ClientReqHandle + Send + Sync 
-    {
-        let listeners = self.list.read().await;
-        let sys_time = sys_now();
-        for client in listeners.iter() {
-            let cval = unsafe{&mut *client.load(Ordering::Relaxed)};
-            if !cval.is_alive(sys_time) {
-                if cval.is_expired(sys_time) {
-                    // TODO: Remove expired
-                    continue;
-                }
-                continue;
-            }
-
-            let mut buffer = BytesMut::zeroed(128);
-            let duration = Duration::from_millis(10);
-            let read_result = cval.read_timeout(&mut buffer, duration).await;
-
-            let n = match read_result {
-                Ok(n) => n, 
-                Err(_) => continue
-            };
-
-            if n == 0 {
-                cval.kill();
-                continue;
-            }
-
-            cval.keep_alive(sys_time+1)
-                .unwrap();
-
-            println!();
-            let mut buffer = buffer.split_to(n);
-            let packet = ClientPacketV5::decode(&mut buffer).unwrap();
-            match packet {
-                ClientPacketV5::Publish(pubs) => {
-                    let mut msg = Message {
-                        packet: pubs,
-                        publisher: None
-                    };
-
-                    if msg.packet.qos.code() > 0 {
-                        msg.publisher = Some(cval.clid.clone());
-                    }
-
-                    handle.enqueue_message(msg)
-                },
-                ClientPacketV5::Subscribe(subs) => {
-                    let res = handle.subscribe_topics(&subs.list, cval.clid.clone()).await;
-                    
-                    let response = SubsAck{
-                        id: subs.id,
-                        properties: None,
-                        return_codes: res
-                    };
-
-                    let buffer = response.encode().unwrap();
-                    let clid = cval.clid.clone();
-                    let net = cval.write_all(&buffer);
-                    let log = self.storage.subscribe(&clid, &subs.list);
-                    let _ = tokio::join!(net, log);
-                },
-                ClientPacketV5::PingReq => {
-                    cval.write_all(&PING_RES).await.unwrap();
-                }
-            }
-        }
+impl SendStrategy for Clients
+{
+    async fn qos0(&self, subscriber: &ClientID, buffer: &[u8]) {
+        let _ = self.pubish(subscriber, buffer).await;
     }
 
-    async fn count_listener(&self) -> usize {
-        let listener = self.list.read().await;
-        listener.len()
+    async fn qos1(
+        &self,
+        publisher: &ClientID,
+        subscriber: &ClientID,
+        packet_id: u16,
+        buffer: &[u8]
+    ) -> std::io::Result<()> {
+        self.pubish(subscriber, buffer).await?;
+        let puback = PubackPacket {
+            packet_id,
+            packet_type: PubACKType::PubAck,
+            properties: None,
+            reason_code: 0
+        };
+
+        let buffer = puback.encode().unwrap();
+        self.pubish(publisher, &buffer).await
+    }
+
+    async fn qos2(
+        &self, 
+        publisher: &ClientID,
+        subscriber: &ClientID,
+        packet_id: u16,
+        buffer: &[u8]
+    ) -> std::io::Result<()> {
+        let msg_buffer = buffer;
+
+        // Pub Rec
+        let mut ack = PubackPacket {
+            packet_id,
+            packet_type: PubACKType::PubRec,
+            properties: None,
+            reason_code: 0x00
+        };
+        let buffer = ack.encode().unwrap();
+        self.pubish(&publisher, &buffer).await?;
+
+        // Wait Pub Rel
+        // ...
+
+        // Publish Message
+        self.pubish(&subscriber, &msg_buffer).await?;
+        
+        // Pub Comp
+        ack.packet_type = PubACKType::PubRel;
+        let buffer = ack.encode().unwrap();
+        self.pubish(&publisher, &buffer).await?;
+        Ok(())
     }
 }
 

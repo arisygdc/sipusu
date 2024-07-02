@@ -29,11 +29,11 @@ async fn app() {
     let addr = "127.0.0.1:3306".to_owned();
     let (svr, broker) = bind(addr.clone()).await;
     println!("[server] running on {}", addr);
-    let _ = join!(svr, broker.0, broker.1);
+    let _ = join!(svr, broker);
     println!("[server] shutdown")
 }
 
-async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, (JoinHandle<()>, JoinHandle<()>)) {
+async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, JoinHandle<()>) {
     println!("running mediator");
 
     let mut mediator: BrokerMediator = BrokerMediator::new().await;

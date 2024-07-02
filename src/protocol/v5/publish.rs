@@ -148,7 +148,8 @@ impl PublishPacket {
         }
 
         let dup = (header & 0x08) != 0;
-        let qos = ServiceLevel::try_from((header & 0x06) >> 1)?;
+        let qos = ServiceLevel::try_from((header & 0x06) >> 1)
+            .map_err(|_| "QoS not Supported")?;
         let retain = (header & 0x01) != 0;
 
         // Remaining length

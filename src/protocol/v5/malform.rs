@@ -10,7 +10,7 @@
 // ·         0xA1           Subscription Identifiers not supported
 // ·         0xA2           Wildcard Subscriptions not supported
 
-pub enum MalformedReq {
+pub enum Malformed {
     MalformedPacket,
     ProtocolError,
     ReceiveMax,
@@ -22,18 +22,18 @@ pub enum MalformedReq {
     WildcardSubsUnSupported
 }
 
-impl MalformedReq {
+impl Malformed {
     pub fn code(&self) -> u8 {
         match self {
-            MalformedReq::MalformedPacket => 0x81,
-            MalformedReq::ProtocolError => 0x82,
-            MalformedReq::ReceiveMax => 0x93,
-            MalformedReq::PacketTooLarge => 0x95,
-            MalformedReq::RetainNotSupported => 0x9A,
-            MalformedReq::QoSNotSupported => 0x9B,
-            MalformedReq::SharedSubsUnsuppported => 0x9E,
-            MalformedReq::SubsIdUnSupported => 0xA1,
-            MalformedReq::WildcardSubsUnSupported => 0xA2,
+            Malformed::MalformedPacket => 0x81,
+            Malformed::ProtocolError => 0x82,
+            Malformed::ReceiveMax => 0x93,
+            Malformed::PacketTooLarge => 0x95,
+            Malformed::RetainNotSupported => 0x9A,
+            Malformed::QoSNotSupported => 0x9B,
+            Malformed::SharedSubsUnsuppported => 0x9E,
+            Malformed::SubsIdUnSupported => 0xA1,
+            Malformed::WildcardSubsUnSupported => 0xA2,
         }
     }
 }

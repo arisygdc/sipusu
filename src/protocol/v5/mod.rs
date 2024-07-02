@@ -6,9 +6,10 @@ pub mod publish;
 pub mod puback;
 pub mod malform;
 use bytes::{Buf, BufMut, BytesMut};
+use malform::Malformed;
 
 #[cfg_attr(test, derive(PartialEq))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ServiceLevel {
     QoS0, QoS1, QoS2
 }
@@ -34,13 +35,13 @@ impl Default for ServiceLevel {
 }
 
 impl TryFrom<u8> for ServiceLevel {
-    type Error = String;
+    type Error = malform::Malformed;
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0x00 => Ok(Self::QoS0),
             0x01 => Ok(Self::QoS1),
             0x02 => Ok(Self::QoS2),
-            _ => Err(String::from("unknown service level"))
+            _ => Err(Malformed::QoSNotSupported)
         }
     }
 }

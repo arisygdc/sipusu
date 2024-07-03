@@ -1,4 +1,4 @@
-use std::{ptr, sync::{atomic::Ordering, Arc}, time::Duration};
+use std::{sync::Arc, time::Duration};
 use bytes::BytesMut;
 use tokio::{select, signal, task::JoinHandle, time};
 use crate::{
@@ -124,14 +124,13 @@ impl TopicRouter for Arc<Trie<SubscriberInstance>> {
     async fn subscribe(&self, clid: &ClientID, subs: &[Subscribe]) -> Result<Vec<SubAckResult>, Malformed> {
         let mut res = Vec::with_capacity(subs.len());
         for sub in subs {
-            let max_qos: ServiceLevel = sub.max_qos.try_into()?;
             let instance = SubscriberInstance {
                 clid: clid.clone(),
-                max_qos: max_qos.clone()
+                max_qos: sub.max_qos.clone()
             };
 
             self.insert(&sub.topic, instance).await;
-            res.push(Ok(max_qos));
+            res.push(Ok(sub.max_qos.clone()));
         }
         Ok(res)
     }
@@ -148,40 +147,33 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
 {
     tokio::spawn(async move {
         let mut buffer = BytesMut::zeroed(1024);
-        println!("[{}] client spawned", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
+        println!("[Client] {} spawned", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
         'lis: loop {
-            let client = unsafe 
-            {
-                let load = client.load(std::sync::atomic::Ordering::Acquire);
-                if load.is_null() {
-                    break 'lis;
-                }
-                &mut (*load)
-            };
-
-            println!("loop");
+            let client = unsafe {&mut *client.load(std::sync::atomic::Ordering::Relaxed)};
 
             let t = sys_now();
             if !client.is_alive(t) {
                 // Saving state
-                println!("client dead");
+                println!("[Client] {} dead", client.clid);
                 break 'lis;
             }
 
-            let dur = Duration::from_secs(2);
+            let dur = Duration::from_secs(1);
+            
             let readed = match client.read_timeout(&mut buffer, dur).await {
                 Ok(readed) => readed,
                 Err(_) => continue
             };
             
             if readed == 0 {
+                println!("[Client] {} killed", client.clid);
                 client.kill();
                 continue 'lis;
             }
 
             let incoming_packet = ClientPacketV5::decode(&mut buffer);
             let packet_received = incoming_packet.unwrap();
-            match client.keep_alive(t+2) {
+            match client.keep_alive(t+1) {
                 Ok(_) => {},
                 Err(_) => continue
             };
@@ -192,18 +184,10 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
                 ClientPacketV5::Subscribe(sub_packet) => subscribe_topics(&router, client, sub_packet).await
             };
             buffer.reserve(1024);
+            // println!("client {} have {}", client.clid, buffer.capacity());
         }
 
-        let ocl = client.load(Ordering::Acquire);
-        let _cmpx = client.compare_exchange(
-            ocl,
-            ptr::null_mut(), 
-            Ordering::AcqRel, 
-            Ordering::Relaxed
-        );
-
-        let ocl = unsafe{Box::from_raw(ocl)};
-        println!("[{}] client dropped", ocl.clid);
+        println!("[Client] {} despawn", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
     });
 }
 
@@ -230,7 +214,7 @@ where RO: TopicRouter
     let recode = match res {
         Ok(res) => res,
         Err(_err) => {
-
+            println!("Malformed");
             unimplemented!()
         }
     };
@@ -242,7 +226,12 @@ where RO: TopicRouter
     };
 
     let buffer = response.encode().unwrap();
-    let _net = client.write_all(&buffer).await;
+    let save = client.storage.clone();
+    let save = save.subscribe(&sub_packet.list);
+    let net = client.write_all(&buffer);
+    let (save, net) = tokio::join!(net, save);
+    net.unwrap();
+    save.unwrap();
 }
 
 async fn observer<RO, DM, F>(
@@ -267,7 +256,7 @@ async fn observer<RO, DM, F>(
                     Ok(v) => v,
                     Err(_) => continue 'observer
                 };
-
+                
                 let (msg, subs) = msg;
                 publish(forwarder.clone(), msg, subs).await
             }

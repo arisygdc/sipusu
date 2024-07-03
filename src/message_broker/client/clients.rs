@@ -1,26 +1,21 @@
-use std::sync::{atomic::{AtomicPtr, Ordering}, Arc};
+use std::{sync::{atomic::{fence, AtomicPtr, Ordering}, Arc}, time::Duration};
 use tokio::{io, sync::RwLock};
 use crate::{
-    connection::SocketWriter, 
-    message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}, protocol::v5::puback::{PubACKType, PubackPacket}
+    connection::SocketWriter, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}, protocol::v5::puback::{PubACKType, PubackPacket}
 };
-use super::{client::{Client, ClientID}, storage::ClientStore, SessionController};
+use super::{client::{Client, ClientID}, SessionController};
 
 pub type AtomicClient = Arc<AtomicPtr<Client>>;
 type MutexClients = RwLock<Vec<AtomicClient>>;
 
 pub struct Clients{
     list: Arc<MutexClients>,
-    storage: ClientStore,
 }
 
 impl<'lc, 'st> Clients {
     pub async fn new() -> Self {
         Self{
             list: Arc::new(RwLock::new(Vec::new())),
-            storage: ClientStore::new()
-                .await
-                .expect("cannot prepare client")
         }
     }
 
@@ -30,16 +25,28 @@ impl<'lc, 'st> Clients {
         let mut clients = self.list.write().await;
 
         let mut found = clients.len();
-        for (i, cval) in clients.iter().enumerate() {
-            let clid = unsafe {&(*cval.load(Ordering::Acquire)).clid};
+        let mut i = 0;
+        'insert: while i < clients.len() {
+            fence(Ordering::Acquire);
+
+            let clid = unsafe {
+                let load = clients[i].load(Ordering::Acquire);
+                if load.is_null() {
+                    clients.remove(i);
+                    continue 'insert;
+                }
+                &(*load).clid
+            };
+
+            i += 1;
             match new_clid.cmp(clid) {
                 std::cmp::Ordering::Equal => return Err("duplicate client id".to_string()),
-                std::cmp::Ordering::Greater => continue,
+                std::cmp::Ordering::Greater => continue 'insert,
                 std::cmp::Ordering::Less => ()
             }
-
+            
             found = i;
-            break;
+            break 'insert;
         }
 
         let new_cl = Box::new(new_cl);
@@ -47,10 +54,7 @@ impl<'lc, 'st> Clients {
         let new_cl = AtomicPtr::new(p);
         let new_cl = Arc::new(new_cl);
         clients.insert(found, new_cl);
-        drop(clients);
 
-        self.storage.prepare(&new_clid).await
-            .map_err(|err| err.to_string())?;
         Ok(())
     }
 
@@ -181,22 +185,40 @@ impl Forwarder for Clients {
 
 impl Clone for Clients {
     fn clone(&self) -> Self {
-        Self { list: Arc::clone(&self.list), storage: self.storage.clone() }
+        Self { list: Arc::clone(&self.list) }
     }
 }
 
 impl Cleanup for Clients {
     async fn clear(self) {
-        let clients = &self.list.write().await;
+        let mut clients = self.list.write().await;
+        if clients.is_empty() {
+            return ;
+        }
 
         for client in clients.iter() {
             unsafe{
                 if client.load(Ordering::Acquire).is_null() {
                     continue;
                 }
+                
                 println!("killing {}", (*client.load(Ordering::Acquire)).clid);
                 (*client.load(Ordering::Acquire)).kill()
             }
+        }
+
+        // for safety
+        // need track client spawn
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        for _ in 0..clients.len() {
+            let opc = clients.pop();
+            let _cl = match opc {
+                Some(cl) => cl,
+                None => continue
+            };
+            println!("[Cleanup] {}", unsafe{&*_cl.load(Ordering::Relaxed)}.clid);
+            drop(unsafe {Box::from_raw(_cl.load(Ordering::Acquire))})
         }
     }
 }

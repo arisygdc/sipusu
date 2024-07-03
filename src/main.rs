@@ -44,6 +44,5 @@ async fn app() {
     println!("[server] running on {}", addr);
     let _ = join!(svr, broker_task);
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
     println!("[server] shutdown")
 }

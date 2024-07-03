@@ -4,11 +4,12 @@ use crate::{
     connection::SocketWriter, 
     message_broker::{Forwarder, SendStrategy}, protocol::v5::puback::{PubACKType, PubackPacket}
 };
-use super::{client::{Client, ClientID}, storage::ClientStore};
+use super::{client::{Client, ClientID}, storage::ClientStore, SessionController};
 
 pub type AtomicClient = Arc<AtomicPtr<Client>>;
 type MutexClients = RwLock<Vec<AtomicClient>>;
 
+/// When clients drop trigger [`SessionController`] kill for all client
 pub struct Clients{
     list: Arc<MutexClients>,
     storage: ClientStore,
@@ -183,5 +184,21 @@ impl Forwarder for Clients {
 impl Clone for Clients {
     fn clone(&self) -> Self {
         Self { list: self.list.clone(), storage: self.storage.clone() }
+    }
+}
+
+impl Drop for Clients {
+    fn drop(&mut self) {
+        let a = self.list.clone();
+        let b = Arc::into_inner(a);
+        let val = match b {
+            None => return,
+            Some(val) => val
+        };
+
+        let val = val.into_inner();
+        for v in val {
+            unsafe{(*v.load(Ordering::Acquire)).kill()}
+        }
     }
 }

@@ -293,31 +293,28 @@ where
     if let v5::ServiceLevel::QoS0 = &packet.qos {
         for ins in subs {
             let buffer = packet.encode().unwrap();
-            forwarder.qos0(&ins.clid, &buffer);
+            forwarder.qos0(&ins.clid, &buffer).await;
         }
         return ;
     }
 
-    let slvl_reduce = match packet.qos {
-        v5::ServiceLevel::QoS0 => {
-            for ins in subs {
-                let buffer = packet.encode().unwrap();
-                forwarder.qos0(&ins.clid, &buffer);
-            }
-            return ;
-        }, 
-        v5::ServiceLevel::QoS1 => false,
-        v5::ServiceLevel::QoS2 => true
-    };
-
-    // TODO: Downgrade qos by max qos
     let publisher_id = publisher_id.unwrap();
     let packet_id = packet.packet_id.unwrap();
     let buffer = packet.encode().unwrap();
-    for s in subs {
-        let _res = match slvl_reduce {
-            false => forwarder.qos1(&publisher_id, &s.clid, packet_id, &buffer).await,
-            true => forwarder.qos2(&publisher_id, &s.clid, packet_id, &buffer).await,
+    
+    // Downgrade qos by max qos
+    for ins in subs {
+        let qos = packet.qos.code().min(ins.max_qos.code());
+        let qos = ServiceLevel::try_from(qos)
+            .unwrap_or_default();
+
+        let _res = match qos {
+            ServiceLevel::QoS0 => { 
+                forwarder.qos0(&ins.clid, &buffer).await;
+                continue;
+            }, 
+            ServiceLevel::QoS1 => forwarder.qos1(&publisher_id, &ins.clid, packet_id, &buffer).await,
+            ServiceLevel::QoS2 => forwarder.qos2(&publisher_id, &ins.clid, packet_id, &buffer).await,
         };
     };
 }

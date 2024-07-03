@@ -1,6 +1,6 @@
-use std::{sync::Arc, time::Duration};
+use std::{ptr, sync::{atomic::Ordering, Arc}, time::Duration};
 use bytes::BytesMut;
-use tokio::{select, signal, sync::broadcast::{self, Sender}, task::JoinHandle, time};
+use tokio::{select, signal, task::JoinHandle, time};
 use crate::{
     connection::SocketWriter, 
     ds::{
@@ -9,22 +9,28 @@ use crate::{
     helper::time::sys_now, 
     protocol::{
         mqtt::{ClientPacketV5, PING_RES}, 
-        v5::{self, malform::Malformed, publish::PublishPacket, subsack::{SubAckResult, SubsAck}, subscribe::{Subscribe, SubscribePacket}, ServiceLevel}
+        v5::{
+            self,
+            malform::Malformed, publish::PublishPacket, 
+            subsack::{SubAckResult, SubsAck}, 
+            subscribe::{Subscribe, SubscribePacket}, 
+            ServiceLevel
+        }
     }
 };
 use crate::connection::SocketReader;
 use super::{
-    client::{
+    cleanup::Cleanup, client::{
         client::{Client, ClientID, UpdateClient}, 
         clients::{AtomicClient, Clients}, SessionController
-    }, Message, SendStrategy
+    }, message::{Message, MessageQueue}, SendStrategy
 };
 
 pub type RouterTree = Arc<Trie<SubscriberInstance>>;
 
 pub struct BrokerMediator {
     clients: Clients,
-    message_queue: Arc<List<Message>>,
+    message_queue: MessageQueue,
     router: RouterTree,
 }
 
@@ -47,7 +53,6 @@ impl<'cp> BrokerMediator {
         let result = self.clients.search_mut_client(&clid, callback)
             .await
             .ok_or(format!("cannot inserting client {}", clid))?;
-        println!("registered");
 
         let client = unsafe{self.clients.get_client(&clid)}.await.unwrap();
         let queue = self.message_queue.clone();
@@ -83,16 +88,13 @@ impl<'cp> BrokerMediator {
         self.clients.remove(clid).await
     }
 
-    pub fn join_handle(&mut self) -> JoinHandle<()> {
+    pub fn join_handle(&self) -> JoinHandle<()> {
         let clients = self.clients.clone();
         
-        let (tx_sigkill, rx_sigkill) = broadcast::channel::<bool>(1);
-        // let router = self.router.clone();
-        tokio::task::spawn(observer_message(
+        tokio::task::spawn(observer(
             self.router.clone(),
             self.message_queue.clone(),
             clients.clone(),
-            tx_sigkill
         ))
     }
 }
@@ -139,19 +141,6 @@ impl TopicRouter for Arc<Trie<SubscriberInstance>> {
     }
 }
 
-impl<Message: std::default::Default> InsertQueue<Message> for Arc<List<Message>> 
-{
-    fn enqueue(&self, val: Message) {
-        self.append(val)
-    }
-}
-
-impl<Message: std::default::Default> GetFromQueue<Message> for Arc<List<Message>> {
-    fn dequeue(&self) -> Option<Message> {
-        self.take_first()
-    }
-}
-
 fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO) 
     where 
         IQ: InsertQueue<Message> + Send + Sync + 'static,
@@ -159,18 +148,33 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
 {
     tokio::spawn(async move {
         let mut buffer = BytesMut::zeroed(1024);
-
+        println!("[{}] client spawned", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
         'lis: loop {
-            let client = unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))};
+            let client = unsafe 
+            {
+                let load = client.load(std::sync::atomic::Ordering::Acquire);
+                if load.is_null() {
+                    break 'lis;
+                }
+                &mut (*load)
+            };
+
+            println!("loop");
+
             let t = sys_now();
             if !client.is_alive(t) {
                 // Saving state
+                println!("client dead");
                 break 'lis;
             }
 
             let dur = Duration::from_secs(2);
-            let readed = client.read_timeout(&mut buffer, dur).await.unwrap();
-            if readed > 0 {
+            let readed = match client.read_timeout(&mut buffer, dur).await {
+                Ok(readed) => readed,
+                Err(_) => continue
+            };
+            
+            if readed == 0 {
                 client.kill();
                 continue 'lis;
             }
@@ -189,6 +193,17 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
             };
             buffer.reserve(1024);
         }
+
+        let ocl = client.load(Ordering::Acquire);
+        let _cmpx = client.compare_exchange(
+            ocl,
+            ptr::null_mut(), 
+            Ordering::AcqRel, 
+            Ordering::Relaxed
+        );
+
+        let ocl = unsafe{Box::from_raw(ocl)};
+        println!("[{}] client dropped", ocl.clid);
     });
 }
 
@@ -230,22 +245,21 @@ where RO: TopicRouter
     let _net = client.write_all(&buffer).await;
 }
 
-async fn observer_message<RO, DM, F>(
+async fn observer<RO, DM, F>(
     router: RO, 
     msg_queue: DM,
     forwarder: F,
-    tx_sigkill: Sender<bool>
 ) where 
     RO: TopicRouter + Send + Sync + 'static,
-    DM: GetFromQueue<Message> + Send + Sync + 'static,
-    F: SendStrategy + Send + Sync + Clone + 'static,
+    DM: GetFromQueue<Message> + Send + Sync + Cleanup + 'static,
+    F: SendStrategy + Send + Sync + Clone + Cleanup + 'static,
 {
     println!("[observer] start");
     'observer: loop {
         select! {
             _ = signal::ctrl_c() => {
-                println!("send shutdown signal");
-                tx_sigkill.send(true).unwrap();
+                forwarder.clear().await;
+                msg_queue.clear().await;
                 break 'observer;
             },
             msg = wait_message(&msg_queue, &router) => {
@@ -255,8 +269,6 @@ async fn observer_message<RO, DM, F>(
                 };
 
                 let (msg, subs) = msg;
-
-                println!("sending message");
                 publish(forwarder.clone(), msg, subs).await
             }
         }
@@ -270,7 +282,6 @@ where
     RO: TopicRouter,
 {
     if let Some(msg) = msg_queue.dequeue() {
-        println!("routing");
 
         let to = router.route(&msg.packet.topic).await;
         let dst = match to {

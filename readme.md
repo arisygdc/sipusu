@@ -26,11 +26,11 @@ SIPUSU aims to implement a custom secure protocol using TLS to encrypt and authe
 ## Roadmap
 
 - [x] Develop a custom secure protocol using TLS for encrypted communication
+- [x] worker pool
+- [ ] cleanup, unused connection and prefix tree
+- [ ] topic shared and not shared
+- [ ] Save client state on disk
 - [ ] Implement Write-Ahead Logging for message durability
-- [ ] Garbage collector, unused connection and prefix tree
-- [ ] Save to disk, unsent message
-- [ ] worker pool
-- [ ] Optimize send message
 - [ ] Optimize disk I/O handling for high performance
 
 ## Contributing

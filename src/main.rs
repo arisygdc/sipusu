@@ -6,11 +6,11 @@ mod protocol;
 mod helper;
 mod ds;
 
-use message_broker::mediator::BrokerMediator;
-use std::io;
+use message_broker::{cleanup::Cleanup, mediator::BrokerMediator};
+use std::time::Duration;
 use connection::handler::Proxy;
 use server::Server;
-use tokio::{join, net::ToSocketAddrs, runtime, task::JoinHandle};
+use tokio::{join, runtime};
 
 fn main() {
     let build_rt = runtime::Builder::new_multi_thread()
@@ -26,26 +26,24 @@ fn main() {
 }
 
 async fn app() {
-    let addr = "127.0.0.1:3306".to_owned();
-    let (svr, broker) = bind(addr.clone()).await;
-    println!("[server] running on {}", addr);
-    let _ = join!(svr, broker);
-    println!("[server] shutdown")
-}
-
-async fn bind(addr: impl ToSocketAddrs + Send + Sync + 'static) -> (JoinHandle<io::Result<()>>, JoinHandle<()>) {
     println!("running mediator");
 
-    let mut mediator: BrokerMediator = BrokerMediator::new().await;
+    let mediator: BrokerMediator = BrokerMediator::new().await;
     let broker_task = mediator.join_handle();
     let handler = Proxy::new(mediator).await.unwrap();
     let server = Server::new(None, handler).await;
 
-    let rtask1 = server.bind(addr);
-    let task1 = match rtask1 {
+    let addr = "127.0.0.1:3306".to_owned();
+    let rtask1 = server.bind(addr.clone());
+    let svr = match rtask1 {
         Ok(v) => v,
         Err(e) => panic!("{}", e.to_string())
     };
+
     
-    (task1, broker_task)
+    println!("[server] running on {}", addr);
+    let _ = join!(svr, broker_task);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    println!("[server] shutdown")
 }

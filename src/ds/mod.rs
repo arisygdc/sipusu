@@ -1,5 +1,3 @@
-use linked_list::List;
-
 pub mod linked_list;
 pub mod trie;
 

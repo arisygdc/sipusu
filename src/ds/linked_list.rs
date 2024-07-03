@@ -1,5 +1,7 @@
 use std::{mem, ptr, sync::atomic::{AtomicPtr, Ordering}};
 
+use crate::message_broker::cleanup::Cleanup;
+
 pub struct AtmcNode<T> {
     val: T,
     next: AtomicPtr<AtmcNode<T>>
@@ -83,6 +85,13 @@ impl<T: Default> List<T> {
         let mut cast = unsafe{Box::from_raw(head)};
         default = mem::take(&mut cast.val);
         Some(default)
+    }
+}
+
+// TODO: cleanup linked list
+impl<T> Cleanup for List<T> {
+    async fn clear(self) {
+        println!("TODO: clear linked list");
     }
 }
 

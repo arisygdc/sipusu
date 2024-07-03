@@ -10,7 +10,7 @@ use crate::{
     helper::time::sys_now, 
     protocol::v5::connack::ConnackPacket
 };
-use super::SessionController;
+use super::{storage::ClientStore, SessionController};
 
 extern crate tokio;
 
@@ -156,12 +156,13 @@ impl Socket<SecuredStream, TcpStream> {
 pub struct Client {
     pub(super) conid: ConnectionID,
     pub clid: ClientID,
-    pub(super) addr: SocketAddr,
-    socket: Socket<SecuredStream, TcpStream>,
+    addr: SocketAddr,
+    pub socket: Socket<SecuredStream, TcpStream>,
     protocol_level: u8,
     ttl: u64,
     keep_alive: u16,
     expr_interval: u32,
+    pub storage: ClientStore
 }
 
 pub struct UpdateClient {
@@ -185,6 +186,7 @@ impl Client {
     ) -> Self {
         let socket = Socket::new(socket);
         let keep_alive = keep_alive.max(60);
+        let storage = ClientStore::new(&clid).await.unwrap();
         Self {
             conid,
             addr,
@@ -194,6 +196,7 @@ impl Client {
             expr_interval,
             keep_alive,
             protocol_level,
+            storage
         }
     }
 

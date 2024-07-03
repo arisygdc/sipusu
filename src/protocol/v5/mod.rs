@@ -8,8 +8,8 @@ pub mod malform;
 use bytes::{Buf, BufMut, BytesMut};
 use malform::Malformed;
 
-#[cfg_attr(test, derive(PartialEq))]
-#[derive(Debug, Clone)]
+// #[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ServiceLevel {
     QoS0, QoS1, QoS2
 }

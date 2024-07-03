@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use bytes::{Buf, BytesMut};
 
-use super::RemainingLength;
+use super::{malform::Malformed, RemainingLength, ServiceLevel};
 
 #[derive(Debug)]
 pub struct SubscribePacket {
@@ -12,20 +12,22 @@ pub struct SubscribePacket {
 #[derive(Debug)]
 pub struct Subscribe {
     pub topic: String,
-    pub max_qos: u8 
+    pub max_qos: ServiceLevel 
 }
 
 impl SubscribePacket {
-    pub fn decode(buffer: &mut BytesMut) -> Result<Self, &'static str> {
+    pub fn decode(buffer: &mut BytesMut) -> Result<Self, Malformed> {
         let header = buffer.get_u8();
         if  (header >> 0x04) != 0x08 {
-            return Err("invalid header");
+            return Err(Malformed::ProtocolError);
         }
         Self::skip_header(buffer)
     }
 
-    pub(super) fn skip_header(buffer: &mut BytesMut) -> Result<Self, &'static str> {
-        let remaining_length = RemainingLength::decode(buffer)?;
+    pub(super) fn skip_header(buffer: &mut BytesMut) -> Result<Self, Malformed> {
+        let remaining_length = RemainingLength::decode(buffer)
+            .map_err(|_| Malformed::ProtocolError)?;
+
         *buffer = buffer.split_to(remaining_length as usize);
 
         let packet_identifier = buffer.get_u16();
@@ -39,9 +41,9 @@ impl SubscribePacket {
             let topic_filter_bytes = buffer.split_to(topic_filter_len);
 
             let topic = String::from_utf8(topic_filter_bytes.into())
-                .map_err(|_| "Invalid UTF-8 in topic filter")?;
+                .map_err(|_| Malformed::MalformedPacket)?;
 
-            let max_qos = buffer.get_u8() & 0x3;
+            let max_qos = ServiceLevel::try_from(buffer.get_u8() & 0x3)?;
             subscriptions.push(Subscribe { topic, max_qos });
         }
         
@@ -56,7 +58,7 @@ impl SubscribePacket {
 mod tests {
     use bytes::BytesMut;
 
-    use crate::protocol::v5::subscribe::{Subscribe, SubscribePacket};
+    use crate::protocol::v5::{subscribe::{Subscribe, SubscribePacket}, ServiceLevel};
 
     #[test]
     fn test_subscribe_packet_deserialization() {
@@ -83,11 +85,11 @@ mod tests {
                     list: vec![
                         Subscribe {
                             topic: "sensor/temperature".to_string(),
-                            max_qos: 1,
+                            max_qos: ServiceLevel::QoS1,
                         },
                         Subscribe {
                             topic: "sensor/humidity".to_string(),
-                            max_qos: 2,
+                            max_qos: ServiceLevel::QoS2,
                         },
                     ],
                 },
@@ -105,7 +107,7 @@ mod tests {
                     id: 1, 
                     list: vec![Subscribe {
                         topic: String::from("test/topic"),
-                        max_qos: 0
+                        max_qos: ServiceLevel::QoS0
                     }]
                 }
             }
@@ -113,7 +115,7 @@ mod tests {
 
         for test in test_table {
             let mut buf = test.raw;
-            let deserialized = SubscribePacket::decode(&mut buf).expect("Deserialization failed");
+            let deserialized = SubscribePacket::decode(&mut buf).unwrap();
             println!("deserialize {:?}, expected {:?}", deserialized, test.exp);
 
             assert_eq!(deserialized.id, test.exp.id);

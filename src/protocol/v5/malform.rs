@@ -10,6 +10,7 @@
 // ·         0xA1           Subscription Identifiers not supported
 // ·         0xA2           Wildcard Subscriptions not supported
 
+#[derive(Debug)]
 pub enum Malformed {
     MalformedPacket,
     ProtocolError,

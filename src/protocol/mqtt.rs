@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 
-use super::v5::{publish::PublishPacket, subscribe::SubscribePacket};
+use super::v5::{malform::Malformed, publish::PublishPacket, subscribe::SubscribePacket};
 
 pub const PING_RES: [u8; 1] = [0xD0];
 
@@ -12,13 +12,13 @@ pub enum ClientPacketV5 {
 }
 
 impl ClientPacketV5 {
-    pub fn decode(buffer: &mut BytesMut) -> Result<Self, String> {
+    pub fn decode(buffer: &mut BytesMut) -> Result<Self, Malformed> {
         let ctrl_packet = buffer[0] >> 4;
         let pv = match ctrl_packet {
             0x08 => Self::Subscribe(SubscribePacket::decode(buffer)?),
-            0x03 => Self::Publish(PublishPacket::decode(buffer)?),
+            0x03 => Self::Publish(PublishPacket::decode(buffer).map_err(|_| Malformed::MalformedPacket)?),
             0x0C => Self::PingReq,
-            _ => return Err(String::from("invalid header"))
+            _ => return Err(Malformed::ProtocolError)
         };
         Ok(pv)
     }

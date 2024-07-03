@@ -2,14 +2,13 @@ use std::sync::{atomic::{AtomicPtr, Ordering}, Arc};
 use tokio::{io, sync::RwLock};
 use crate::{
     connection::SocketWriter, 
-    message_broker::{Forwarder, SendStrategy}, protocol::v5::puback::{PubACKType, PubackPacket}
+    message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}, protocol::v5::puback::{PubACKType, PubackPacket}
 };
 use super::{client::{Client, ClientID}, storage::ClientStore, SessionController};
 
 pub type AtomicClient = Arc<AtomicPtr<Client>>;
 type MutexClients = RwLock<Vec<AtomicClient>>;
 
-/// When clients drop trigger [`SessionController`] kill for all client
 pub struct Clients{
     list: Arc<MutexClients>,
     storage: ClientStore,
@@ -161,7 +160,6 @@ impl SendStrategy for Clients
     }
 }
 
-
 impl Forwarder for Clients {
     async fn pubish(&self, con_id: &ClientID, packet: &[u8]) -> io::Result<()> {
         let found = self.search_mut_client(&con_id, |client| {
@@ -183,22 +181,22 @@ impl Forwarder for Clients {
 
 impl Clone for Clients {
     fn clone(&self) -> Self {
-        Self { list: self.list.clone(), storage: self.storage.clone() }
+        Self { list: Arc::clone(&self.list), storage: self.storage.clone() }
     }
 }
 
-impl Drop for Clients {
-    fn drop(&mut self) {
-        let a = self.list.clone();
-        let b = Arc::into_inner(a);
-        let val = match b {
-            None => return,
-            Some(val) => val
-        };
+impl Cleanup for Clients {
+    async fn clear(self) {
+        let clients = &self.list.write().await;
 
-        let val = val.into_inner();
-        for v in val {
-            unsafe{(*v.load(Ordering::Acquire)).kill()}
+        for client in clients.iter() {
+            unsafe{
+                if client.load(Ordering::Acquire).is_null() {
+                    continue;
+                }
+                println!("killing {}", (*client.load(Ordering::Acquire)).clid);
+                (*client.load(Ordering::Acquire)).kill()
+            }
         }
     }
 }

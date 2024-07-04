@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::{atomic::{AtomicU64, Ordering}, Arc}, time::Duration};
 use bytes::BytesMut;
 use tokio::{select, signal, task::JoinHandle, time};
 use crate::{
@@ -30,6 +30,7 @@ pub type RouterTree = Arc<Trie<SubscriberInstance>>;
 pub struct BrokerMediator {
     clients: Clients,
     message_queue: MessageQueue,
+    spawn_counter: Arc<AtomicU64>,
     router: RouterTree,
 }
 
@@ -38,7 +39,8 @@ impl BrokerMediator {
         let clients = Clients::new().await;
         let message_queue = Arc::new(List::new());
         let router = Arc::new(Trie::new());
-        Self{ clients, message_queue, router }
+        let spawn_counter =  Arc::new(AtomicU64::default());
+        Self{ clients, message_queue, spawn_counter, router }
     }
 }
 
@@ -56,7 +58,7 @@ impl<'cp> BrokerMediator {
         let client = unsafe{self.clients.get_client(&clid)}.await.unwrap();
         let queue = self.message_queue.clone();
         let router = self.router.clone();
-        spawn_client(client, queue, router);
+        spawn_client(client, self.spawn_counter.clone(), queue, router);
         Ok(result)
     }
 
@@ -139,12 +141,13 @@ impl TopicRouter for Arc<Trie<SubscriberInstance>> {
     }
 }
 
-fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO) 
+fn spawn_client<IQ, RO>(client: AtomicClient, spawn_counter: Arc<AtomicU64>, msg_queue: IQ, router: RO) 
     where 
         IQ: InsertQueue<Message> + Send + Sync + 'static,
         RO: TopicRouter + Send + Sync + 'static
 {
     tokio::spawn(async move {
+        spawn_counter.fetch_add(1, Ordering::AcqRel);
         let mut buffer = BytesMut::zeroed(1024);
         println!("[Client] {} spawned", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
         'lis: loop {
@@ -183,9 +186,9 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
                 ClientPacketV5::Subscribe(sub_packet) => subscribe_topics(&router, client, sub_packet).await
             };
             buffer.reserve(1024);
-            // println!("client {} have {}", client.clid, buffer.capacity());
         }
 
+        spawn_counter.fetch_sub(1, Ordering::AcqRel);
         println!("[Client] {} despawn", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
     });
 }
@@ -233,7 +236,7 @@ where RO: TopicRouter
     save.unwrap();
 }
 
-async fn observer<RO, DM, F>(
+async fn observer<RO, DM, F> (
     router: RO, 
     msg_queue: DM,
     forwarder: F,

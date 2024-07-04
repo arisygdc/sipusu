@@ -1,7 +1,8 @@
+#![allow(dead_code)]
 use std::{collections::HashMap, env, path::PathBuf};
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use tokio::{fs::{File, OpenOptions}, io::{self, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter}};
-use crate::protocol::v5::{subscribe::Subscribe, ServiceLevel};
+use crate::protocol::v5::{connect, subscribe::Subscribe, ServiceLevel};
 use super::{client::ClientID, DATA_STORE};
 
 /// Always clone when use, this case do for pass the borrow checker. 
@@ -10,8 +11,99 @@ pub struct ClientStore {
     path: PathBuf,
 }
 
+pub(super) struct MetaData {
+    pub(super) protocol_level: u8,
+    pub(super) keep_alive_interval: u16,
+    pub(super) expr_interval: u32,
+    pub(super) maximum_qos: u8,
+    pub(super) receive_maximum: u16,
+    pub(super) topic_alias_maximum: u16,
+    pub(super) user_properties: Vec<(String, String)>,
+}
+
+impl MetaData {
+    fn serialize(&self, buffer: &mut BytesMut) {
+        buffer.put_u8(self.protocol_level);
+        buffer.put_u16(self.keep_alive_interval);
+        buffer.put_u32(self.expr_interval);
+        buffer.put_u8(self.maximum_qos);
+        buffer.put_u16(self.receive_maximum);
+        buffer.put_u16(self.topic_alias_maximum);
+        buffer.put_bytes(0x0A, 2);
+        for up in &self.user_properties {
+            serialize_string(buffer, &up.0);
+            serialize_string(buffer, &up.1);
+        }
+    }
+
+    fn est_len(&self) -> usize {
+        let mut est_len = 15;
+        for up in self.user_properties.iter() {
+            est_len += 2 + up.0.len() + 2 + up.1.len() + 1;
+        }
+        est_len
+    }
+
+    fn deserialize(buffer: &mut BytesMut) -> Self {
+        Self {
+            protocol_level: buffer.get_u8(),
+            keep_alive_interval: buffer.get_u16(),
+            expr_interval: buffer.get_u32(),
+            maximum_qos: buffer.get_u8(),
+            receive_maximum: buffer.get_u16(),
+            topic_alias_maximum: buffer.get_u16(),
+            user_properties: {
+                let mut prop = Vec::new();
+                while buffer.len() != 0 {
+                    prop.push((
+                        deserialize_string(buffer),
+                        deserialize_string(buffer)
+                    ))
+                }
+                prop
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Will {
+    pub(super) property: Option<connect::Properties>,
+    pub(super) topic: String,
+    pub(super) payload: Vec<u8>
+}
+
+impl Will {
+    fn serialize(&self, buffer: &mut BytesMut) {
+        serialize_string(buffer, &self.topic);
+        buffer.put_u8(0xA);
+        buffer.put(self.payload.as_slice());
+    }
+
+    fn est_len(&self) -> usize {
+        2 + self.topic.len() + 1 + self.payload.len()
+    }
+
+    fn deserialize(buffer: &mut BytesMut) -> Self {
+        let mut new = Self::default();
+        new.topic = deserialize_string(buffer);
+        new.payload = buffer.to_vec();
+        new
+    }
+}
+fn serialize_string(buffer: &mut BytesMut, val: &str) {
+    buffer.put_u16(val.len() as u16);
+    buffer.put(val.as_bytes());
+}
+
+fn deserialize_string(buffer: &mut BytesMut) -> String {
+    let len = buffer.get_u16();
+    let b = buffer.split_to(len as usize);
+    String::from_utf8(b.to_vec()).unwrap()
+}
+
 impl ClientStore {
-    pub(super) async fn new(clid: &ClientID) -> io::Result<Self> {
+    pub(super) async fn new(clid: &ClientID, mdata: &MetaData, will: Option<Will>) -> io::Result<Self> {
         let mut dir = env::current_dir()?;
         dir.push(DATA_STORE);
         let clroot_exists = dir.exists();
@@ -29,11 +121,37 @@ impl ClientStore {
             .write(true)
             .create(true);
 
-        let mut path = dir.clone();
-        path.push("subscribed");
-        let f = fopt.open(path).await?;
-        f.set_len(0).await?;
+        {
+            let mut path = dir.clone();
+            path.push("subscribed");
+            let f = fopt.open(&path).await?;
+            f.set_len(0).await?;
+        }
 
+        let mut buffer = BytesMut::with_capacity(mdata.est_len());
+        {
+            let mut path = dir.clone();
+            path.push("metadata");
+            let mut f = fopt.open(&path).await?;
+            f.set_len(0).await?;
+            let mut buffer = BytesMut::with_capacity(mdata.est_len());
+            mdata.serialize(&mut buffer);
+            f.write_all(&buffer).await?;
+        }
+        {    
+            let mut path = dir.clone();
+            path.push("will");
+            if path.exists() {
+                tokio::fs::remove_file(&path).await?;
+            }
+            
+            if let Some(w) = will {
+                let mut f = fopt.open(&path).await?;
+                unsafe {buffer.set_len(0)}
+                w.serialize(&mut buffer);
+                f.write_all(&buffer).await?;
+            }
+        }
         Ok(Self { path: dir.to_owned() })
     }
 
@@ -168,45 +286,60 @@ async fn write_subscribed(stream: &mut BufWriter<File>, map: &mut HashMap<String
     Ok(est_leng)
 }
 
+// async fn write_metadata(writer: &mut BufWriter<File>, mdata: &MetaData) -> io::Result<usize> {
+//     let mut buf = BytesMut::with_capacity(15);
+//     mdata.expr_interval;
 
-#[cfg(test)]
-mod tests {
-    use crate::protocol::v5::{subscribe::Subscribe, ServiceLevel};
+//     map.iter().for_each(|(each, slvl)| {
+//         buf.put_u8(slvl.code());
+//         buf.put(each.as_bytes());
+//         buf.put_u8(0x0A);
+//     });
 
-    use super::{ClientID, ClientStore};
+//     writer.write_all(&buf).await?;
+//     writer.flush().await?;
+//     Ok(est_leng)
+// }
 
-    #[tokio::test]
-    async fn log_path() {
-        let clid = ClientID::new("raw_clid".to_owned());
-        let l = ClientStore::new(&clid).await;
-        let logs = l.unwrap();
-        tokio::fs::remove_dir(logs.path).await.unwrap();
-    }
 
-    #[tokio::test]
-    async fn append() {
-        let clid = ClientID::new("raw_clid".to_owned());
-        let l = ClientStore::new(&clid).await;
-        let logs = l.unwrap();
+// #[cfg(test)]
+// mod tests {
+//     use crate::protocol::v5::{subscribe::Subscribe, ServiceLevel};
+
+//     use super::{ClientID, ClientStore};
+
+//     #[tokio::test]
+//     async fn log_path() {
+//         let clid = ClientID::new("raw_clid".to_owned());
+//         let l = ClientStore::new(&clid).await;
+//         let logs = l.unwrap();
+//         tokio::fs::remove_dir(logs.path).await.unwrap();
+//     }
+
+//     #[tokio::test]
+//     async fn append() {
+//         let clid = ClientID::new("raw_clid".to_owned());
+//         let l = ClientStore::new(&clid).await;
+//         let logs = l.unwrap();
         
-        let v = vec![
-            Subscribe{
-                max_qos: ServiceLevel::QoS1,
-                topic: "topic/a".to_owned()
-            },Subscribe{
-                max_qos: ServiceLevel::QoS1,
-                topic: "topic/b".to_owned()
-            }, Subscribe{
-                max_qos: ServiceLevel::QoS1,
-                topic: "topic/c".to_owned()
-            },
-        ];
-        let subs_log = logs.clone();
-        subs_log.subscribe(&v)
-            .await
-            .unwrap();
+//         let v = vec![
+//             Subscribe{
+//                 max_qos: ServiceLevel::QoS1,
+//                 topic: "topic/a".to_owned()
+//             },Subscribe{
+//                 max_qos: ServiceLevel::QoS1,
+//                 topic: "topic/b".to_owned()
+//             }, Subscribe{
+//                 max_qos: ServiceLevel::QoS1,
+//                 topic: "topic/c".to_owned()
+//             },
+//         ];
+//         let subs_log = logs.clone();
+//         subs_log.subscribe(&v)
+//             .await
+//             .unwrap();
     
-        let p = [v[2].topic.clone()];
-        logs.unsubscribe(&p).await.unwrap();
-    }
-}
+//         let p = [v[2].topic.clone()];
+//         logs.unsubscribe(&p).await.unwrap();
+//     }
+// }

@@ -1,8 +1,8 @@
-use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
+use std::{io, sync::atomic::AtomicU32};
 use super::{errors::ConnError, handshake::{MqttConnectRequest, MqttConnectedResponse}, line::SocketConnection, ConnectionID};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
-use crate::{message_broker::{client::client::{Client, ClientID, UpdateClient}, mediator::BrokerMediator}, protocol::v5::{connack::{ConnackPacket, Properties}, connect::ConnectPacket}, server::Wire};
+use crate::{message_broker::{client::{client::{Client, Limiter, UpdateClient}, clobj::ClientID}, mediator::BrokerMediator, MAX_QOS}, protocol::v5::{connack::{ConnackPacket, Properties}, connect::ConnectPacket}, server::Wire};
 
 #[allow(dead_code)]
 pub struct Proxy {
@@ -69,6 +69,15 @@ impl Proxy {
             self.broker.remove(&srv_var.clid).await.unwrap();
         }
 
+        let mut limit = Limiter::default();
+        if let Some(ref v) = response.properties {
+            limit = Limiter::new(
+                v.receive_maximum, 
+                v.maximum_packet_size,
+                v.topic_alias_maximum
+            );
+        }
+
         let client = Client::new(
             connid, 
             conn, 
@@ -76,6 +85,7 @@ impl Proxy {
             srv_var.keep_alive,
             srv_var.expr_interval,
             srv_var.protocol_level,
+            limit
         ).await;
 
         self.broker.register(client, |c| {
@@ -124,7 +134,7 @@ struct ServerVariable {
     clean_start: bool,
     keep_alive: u16,
     protocol_level: u8,
-    expr_interval: u32
+    expr_interval: u32,
 }
 
 // TODO: on notes
@@ -142,7 +152,7 @@ fn collect(req: ConnectPacket, res: &mut ConnackPacket) -> Result<ServerVariable
         clean_start,
         keep_alive: req.keep_alive,
         protocol_level: req.protocol_level,
-        expr_interval: 0
+        expr_interval: 0,
     };
 
     let req_prop = match req.properties {
@@ -159,8 +169,9 @@ fn collect(req: ConnectPacket, res: &mut ConnackPacket) -> Result<ServerVariable
     if is_generate_clid {
         res_prop.assigned_client_identifier = Some(clid.to_string())
     }
+
     res_prop.receive_maximum = req_prop.receive_maximum;
-    // res_prop.maximum_qos
+    res_prop.maximum_qos = Some(MAX_QOS);
     // res_prop.retain_available
     res_prop.maximum_packet_size = req_prop.maximum_packet_size;
     res_prop.topic_alias_maximum = req_prop.topic_alias_maximum;

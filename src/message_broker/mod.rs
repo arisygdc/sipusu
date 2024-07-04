@@ -1,5 +1,6 @@
 use std::io;
-use client::client::ClientID;
+
+use client::clobj::ClientID;
 
 mod msg_state;
 pub mod client;

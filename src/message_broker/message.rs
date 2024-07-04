@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{ds::{linked_list::List, GetFromQueue, InsertQueue}, protocol::v5::publish::PublishPacket};
-use super::{cleanup::Cleanup, client::client::ClientID};
+use super::{cleanup::Cleanup, client::clobj::ClientID};
 
 #[derive(Default)]
 pub struct Message {

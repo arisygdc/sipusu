@@ -22,7 +22,7 @@ pub struct ConnectPacket {
 pub struct Properties {
     pub session_expiry_interval: Option<u32>,
     pub receive_maximum: Option<u16>,
-    pub maximum_packet_size: Option<u32>,
+    pub maximum_packet_size: Option<u16>,
     pub topic_alias_maximum: Option<u16>,
     pub request_response_information: Option<u8>,
     pub request_problem_information: Option<u8>,
@@ -155,7 +155,7 @@ fn  decode_properties(buffer: &mut BytesMut) -> Result<Properties, String> {
         match identifier {
             0x11 => properties.session_expiry_interval = Some(buffer.get_u32()),
             0x21 => properties.receive_maximum = Some(buffer.get_u16()),
-            0x27 => properties.maximum_packet_size = Some(buffer.get_u32()),
+            0x27 => properties.maximum_packet_size = Some(buffer.get_u16()),
             0x22 => properties.topic_alias_maximum = Some(buffer.get_u16()),
             0x19 => properties.request_response_information = Some(buffer.get_u8()),
             0x17 => properties.request_problem_information = Some(buffer.get_u8()),

@@ -1,6 +1,7 @@
 pub mod client;
 pub mod clients;
 pub mod storage;
+pub mod clobj;
 
 pub const DATA_STORE: &str = ".dbg_data/clients";
 

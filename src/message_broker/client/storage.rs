@@ -3,7 +3,7 @@ use std::{collections::HashMap, env, path::PathBuf};
 use bytes::{Buf, BufMut, BytesMut};
 use tokio::{fs::{File, OpenOptions}, io::{self, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter}};
 use crate::protocol::v5::{connect, subscribe::Subscribe, ServiceLevel};
-use super::{client::ClientID, DATA_STORE};
+use super::{clobj::ClientID, DATA_STORE};
 
 /// Always clone when use, this case do for pass the borrow checker. 
 #[derive(Debug, Clone)]
@@ -15,8 +15,8 @@ pub(super) struct MetaData {
     pub(super) protocol_level: u8,
     pub(super) keep_alive_interval: u16,
     pub(super) expr_interval: u32,
-    pub(super) maximum_qos: u8,
     pub(super) receive_maximum: u16,
+    pub(super) maximum_packet_size: u16,
     pub(super) topic_alias_maximum: u16,
     pub(super) user_properties: Vec<(String, String)>,
 }
@@ -26,8 +26,8 @@ impl MetaData {
         buffer.put_u8(self.protocol_level);
         buffer.put_u16(self.keep_alive_interval);
         buffer.put_u32(self.expr_interval);
-        buffer.put_u8(self.maximum_qos);
         buffer.put_u16(self.receive_maximum);
+        buffer.put_u16(self.maximum_packet_size);
         buffer.put_u16(self.topic_alias_maximum);
         buffer.put_bytes(0x0A, 2);
         for up in &self.user_properties {
@@ -49,8 +49,8 @@ impl MetaData {
             protocol_level: buffer.get_u8(),
             keep_alive_interval: buffer.get_u16(),
             expr_interval: buffer.get_u32(),
-            maximum_qos: buffer.get_u8(),
             receive_maximum: buffer.get_u16(),
+            maximum_packet_size: buffer.get_u16(),
             topic_alias_maximum: buffer.get_u16(),
             user_properties: {
                 let mut prop = Vec::new();

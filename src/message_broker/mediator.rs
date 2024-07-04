@@ -21,8 +21,7 @@ use crate::{
 use crate::connection::SocketReader;
 use super::{
     cleanup::Cleanup, client::{
-        client::{Client, ClientID, UpdateClient}, 
-        clients::{AtomicClient, Clients}, SessionController
+        client::{Client, UpdateClient}, clients::{AtomicClient, Clients}, clobj::ClientID, SessionController
     }, message::{Message, MessageQueue}, SendStrategy
 };
 
@@ -152,7 +151,7 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
             let client = unsafe {&mut *client.load(std::sync::atomic::Ordering::Relaxed)};
 
             let t = sys_now();
-            if !client.is_alive(t) {
+            if !client.session.is_alive(t) {
                 // Saving state
                 println!("[Client] {} dead", client.clid);
                 break 'lis;
@@ -167,13 +166,13 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
             
             if readed == 0 {
                 println!("[Client] {} killed", client.clid);
-                client.kill();
+                client.session.kill();
                 continue 'lis;
             }
 
             let incoming_packet = ClientPacketV5::decode(&mut buffer);
             let packet_received = incoming_packet.unwrap();
-            match client.keep_alive(t+1) {
+            match client.session.keep_alive(t+1) {
                 Ok(_) => {},
                 Err(_) => continue
             };

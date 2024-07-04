@@ -1,9 +1,8 @@
 use std::{sync::{atomic::{fence, AtomicPtr, Ordering}, Arc}, time::Duration};
 use tokio::{io, sync::RwLock};
-use crate::{
-    connection::SocketWriter, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}, protocol::v5::puback::{PubACKType, PubackPacket}
-};
-use super::{client::{Client, ClientID}, SessionController};
+use crate::{connection::SocketWriter, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}};
+use crate::protocol::v5::puback::{PubACKType, PubackPacket};
+use super::{client::Client, clobj::ClientID, SessionController};
 
 pub type AtomicClient = Arc<AtomicPtr<Client>>;
 type MutexClients = RwLock<Vec<AtomicClient>>;
@@ -152,6 +151,7 @@ impl SendStrategy for Clients
 
         // Wait Pub Rel
         // ...
+        println!("TODO: wait pubrel");
 
         // Publish Message
         self.pubish(&subscriber, &msg_buffer).await?;
@@ -203,7 +203,7 @@ impl Cleanup for Clients {
                 }
                 
                 println!("killing {}", (*client.load(Ordering::Acquire)).clid);
-                (*client.load(Ordering::Acquire)).kill()
+                (*client.load(Ordering::Acquire)).session.kill()
             }
         }
 

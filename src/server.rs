@@ -55,11 +55,11 @@ impl Server {
         let listener = TcpListener::bind(&addr).await?;
         
         loop {
-            let (stream, peer_addr) = listener.accept().await?;
+            let (stream, _) = listener.accept().await?;
             let acceptor = acceptor.clone();
             
             println!("[stream] incoming");
-            wire.connect_with_tls(stream, peer_addr, acceptor).await;
+            wire.connect_with_tls(stream, acceptor).await;
         }
     }   
 
@@ -76,13 +76,13 @@ impl Server {
         'tcp: loop {
             select! {
                 incoming = listener.accept() => {
-                    let (stream, peer_addr) = match incoming {
+                    let (stream, _) = match incoming {
                         Ok(s) => s,
                         Err(e) => panic!("{}", e.to_string())
                     };
 
                     println!("[stream] incoming");
-                    wire.connect(stream, peer_addr).await;
+                    wire.connect(stream).await;
                 },
                 _ = signal::ctrl_c() => {
                     break 'tcp
@@ -127,6 +127,6 @@ impl CertificatePath {
 }
 
 pub trait Wire {
-    fn connect_with_tls(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) -> impl std::future::Future<Output = ()> + Send;
-    fn connect(&self, stream: TcpStream, addr: SocketAddr) -> impl std::future::Future<Output = ()> + Send;
+    fn connect_with_tls(&self, stream: TcpStream, tls: TlsAcceptor) -> impl std::future::Future<Output = ()> + Send;
+    fn connect(&self, stream: TcpStream) -> impl std::future::Future<Output = ()> + Send;
 }

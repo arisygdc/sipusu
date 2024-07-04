@@ -16,11 +16,11 @@ impl Proxy {
         Ok(Self { access_total, broker })
     }
     
-    async fn establish_connection(&self, connid: ConnectionID, mut conn: SocketConnection, addr: SocketAddr) -> Result<(), ConnError> {
+    async fn establish_connection(&self, connid: ConnectionID, mut conn: SocketConnection) -> Result<(), ConnError> {
         let req_ack = conn.read_request().await?;
         let mut connack_packet = ConnackPacket::default();
 
-        let srv_var = collect(req_ack, addr, &mut connack_packet).unwrap();
+        let srv_var = collect(req_ack, &mut connack_packet).unwrap();
         self.start_session(
             connack_packet,
             connid,
@@ -45,7 +45,6 @@ impl Proxy {
             // TODO: response ack
             let mut bucket = UpdateClient {
                 conid: Some(connid.clone()),
-                addr: Some(srv_var.addr),
                 keep_alive: Some(srv_var.keep_alive),
                 protocol_level: Some(srv_var.protocol_level),
                 socket: Some(conn)
@@ -73,7 +72,6 @@ impl Proxy {
         let client = Client::new(
             connid, 
             conn, 
-            srv_var.addr, 
             srv_var.clid, 
             srv_var.keep_alive,
             srv_var.expr_interval,
@@ -95,7 +93,7 @@ impl Proxy {
 }
 
 impl Wire for Proxy {
-    async fn connect_with_tls(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) {
+    async fn connect_with_tls(&self, stream: TcpStream, tls: TlsAcceptor) {
         let id = self.request_id();
         println!("[stream] process id {}", id);
         let stream = match tls.accept(stream).await {
@@ -109,29 +107,28 @@ impl Wire for Proxy {
         
         println!("[stream] secured");
         let stream = SocketConnection::Secure(stream);
-        let _ = self.establish_connection(id, stream, addr).await;
+        let _ = self.establish_connection(id, stream).await;
     }
 
-    async fn connect(&self, stream: TcpStream, addr: SocketAddr) {
+    async fn connect(&self, stream: TcpStream) {
         let id = self.request_id();
         println!("[stream] process id {}", id);
         let stream = stream;
         let stream = SocketConnection::Plain(stream);
-        let _ = self.establish_connection(id, stream, addr).await;
+        let _ = self.establish_connection(id, stream).await;
     }
 }
 
 struct ServerVariable {
     clid: ClientID,
     clean_start: bool,
-    addr: SocketAddr,
     keep_alive: u16,
     protocol_level: u8,
     expr_interval: u32
 }
 
 // TODO: on notes
-fn collect(req: ConnectPacket, addr: SocketAddr, res: &mut ConnackPacket) -> Result<ServerVariable, String> {
+fn collect(req: ConnectPacket, res: &mut ConnackPacket) -> Result<ServerVariable, String> {
     let clean_start = req.clean_start();
 
     let is_generate_clid = req.client_id.len() == 0;
@@ -142,7 +139,6 @@ fn collect(req: ConnectPacket, addr: SocketAddr, res: &mut ConnackPacket) -> Res
     
     let mut srv_var = ServerVariable {
         clid: clid.clone(),
-        addr,
         clean_start,
         keep_alive: req.keep_alive,
         protocol_level: req.protocol_level,

@@ -4,6 +4,8 @@ use tokio::{io::{self, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf}, net::T
 
 use crate::{connection::{handshake::MqttConnectedResponse, line::{SecuredStream, SocketConnection}, SocketReader, SocketWriter}, protocol::v5::connack::ConnackPacket};
 
+use super::SessionController;
+
 #[derive(Debug, Eq, Ord, Clone)]
 pub struct ClientID {
     id: String,
@@ -109,6 +111,51 @@ impl PartialOrd for ClientID {
         Some(self.hash.cmp(&other.hash))
     }
 }
+
+pub struct Session {
+    pub(super) ttl: u64,
+    pub(super) keep_alive: u16,
+    pub(super) expr_interval: u32,
+}
+
+#[derive(Default)]
+pub struct Limiter {
+    pub(super) receive_maximum: Option<u16>,
+    pub(super) maximum_packet_size: Option<u16>,
+    pub(super) topic_alias_maximum: Option<u16>,
+}
+
+impl Limiter {
+    pub fn new(
+        receive_maximum: Option<u16>, 
+        maximum_packet_size: Option<u16>, 
+        topic_alias_maximum: Option<u16>
+    ) -> Self {
+        Self { maximum_packet_size, receive_maximum, topic_alias_maximum }
+    }
+}
+impl SessionController for Session {
+    fn is_alive(&self, t: u64) -> bool {
+        self.ttl >= t
+    }
+
+    fn is_expired(&self, t: u64) -> bool {
+        (self.expr_interval as u64 + self.ttl) <= t
+    }
+
+    fn keep_alive(&mut self, t: u64) -> Result<u64, String> {
+        if self.ttl <= t {
+            return Err(String::from("already expired"));
+        }
+        self.ttl = t + self.keep_alive as u64;
+        Ok(self.ttl)
+    }
+
+    fn kill(&mut self) {
+        self.ttl = 0;
+    }
+}
+
 
 pub type ClientSocket = Socket<SecuredStream, TcpStream>;
 pub(super) enum SocketInner<S, P> {

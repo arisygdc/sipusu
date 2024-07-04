@@ -7,7 +7,7 @@ use crate::{
     }, 
     helper::time::sys_now
 };
-use super::{clobj::{ClientID, Socket}, storage::{ClientStore, MetaData}, SessionController};
+use super::{clobj::{ClientID, Limiter, Session, Socket}, storage::{ClientStore, MetaData}, SessionController};
 
 
 #[allow(dead_code)]
@@ -21,28 +21,6 @@ pub struct Client {
     pub storage: ClientStore
 }
 
-pub struct Session {
-    ttl: u64,
-    keep_alive: u16,
-    expr_interval: u32,
-}
-
-#[derive(Default)]
-pub struct Limiter {
-    receive_maximum: Option<u16>,
-    maximum_packet_size: Option<u16>,
-    topic_alias_maximum: Option<u16>,
-}
-
-impl Limiter {
-    pub fn new(
-        receive_maximum: Option<u16>, 
-        maximum_packet_size: Option<u16>, 
-        topic_alias_maximum: Option<u16>
-    ) -> Self {
-        Self { maximum_packet_size, receive_maximum, topic_alias_maximum }
-    }
-}
 
 pub struct UpdateClient {
     pub conid: Option<ConnectionID>,
@@ -117,27 +95,5 @@ impl Client {
         }
 
         Ok(())
-    }
-}
-
-impl SessionController for Session {
-    fn is_alive(&self, t: u64) -> bool {
-        self.ttl >= t
-    }
-
-    fn is_expired(&self, t: u64) -> bool {
-        (self.expr_interval as u64 + self.ttl) <= t
-    }
-
-    fn keep_alive(&mut self, t: u64) -> Result<u64, String> {
-        if self.ttl <= t {
-            return Err(String::from("already expired"));
-        }
-        self.ttl = t + self.keep_alive as u64;
-        Ok(self.ttl)
-    }
-
-    fn kill(&mut self) {
-        self.ttl = 0;
     }
 }

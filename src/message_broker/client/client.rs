@@ -1,16 +1,13 @@
 use std::io;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
+use tokio::net::TcpStream;
 use crate::{
     connection::{
-        handshake::MqttConnectedResponse, 
         line::{SecuredStream, SocketConnection}, 
-        ConnectionID, SocketReader, 
-        SocketWriter
+        ConnectionID
     }, 
-    helper::time::sys_now, 
-    protocol::v5::connack::ConnackPacket
+    helper::time::sys_now
 };
-use super::{clobj::{ClientID, Socket, SocketInner}, storage::{ClientStore, MetaData}, SessionController};
+use super::{clobj::{ClientID, Socket}, storage::{ClientStore, MetaData}, SessionController};
 
 
 #[allow(dead_code)]
@@ -142,31 +139,5 @@ impl SessionController for Session {
 
     fn kill(&mut self) {
         self.ttl = 0;
-    }
-}
-
-impl SocketWriter for Client {
-    async fn write_all(&mut self, buffer: &[u8]) -> tokio::io::Result<()> {
-        match &mut self.socket.w {
-            SocketInner::Plain(p) => p.write_all(buffer).await,
-            SocketInner::Secured(s) => s.write_all(buffer).await
-        }
-    }
-}
-
-impl SocketReader for Client {
-    async fn read(&mut self, buffer: &mut [u8]) -> tokio::io::Result<usize> {
-        match &mut self.socket.r {
-            SocketInner::Plain(p) => p.read(buffer).await,
-            SocketInner::Secured(s) => s.read(buffer).await
-        }
-    }
-}
-
-impl MqttConnectedResponse for Client {
-    async fn connack<'a>(&'a mut self, ack: &'a ConnackPacket) -> io::Result<()> {
-        let mut packet = ack.encode().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let res = self.write_all(&mut packet).await;
-        res
     }
 }

@@ -50,9 +50,9 @@ impl Proxy {
                 socket: Some(conn)
             };
 
-            let restore_feedback = self.broker.try_restore_connection(&srv_var.clid, &mut bucket, |c| {
+            let restore_feedback = self.broker.try_restore_connection(&srv_var.clid, &mut bucket, |s| {
                 response.session_present = true;
-                c.connack(&response)
+                s.connack(&response)
             }).await;
 
             if let Ok(fb) = restore_feedback {
@@ -88,8 +88,8 @@ impl Proxy {
             limit
         ).await;
 
-        self.broker.register(client, |c| {
-            c.connack(&response)
+        self.broker.register(client, |s| {
+            s.connack(&response)
         })
         .await.unwrap()
         .await.unwrap();

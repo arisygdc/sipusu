@@ -21,7 +21,7 @@ use crate::{
 use crate::connection::SocketReader;
 use super::{
     cleanup::Cleanup, client::{
-        client::{Client, UpdateClient}, clients::{AtomicClient, Clients}, clobj::ClientID, SessionController
+        client::{Client, UpdateClient}, clients::{AtomicClient, Clients}, clobj::{ClientID, ClientSocket}, SessionController
     }, message::{Message, MessageQueue}, SendStrategy
 };
 
@@ -44,12 +44,12 @@ impl BrokerMediator {
 
 impl<'cp> BrokerMediator {
     pub async fn register<CB, R>(&self, new_cl: Client, callback: CB) -> Result<R, String>
-    where CB: FnOnce(&'cp mut Client) -> R
+    where CB: FnOnce(&'cp mut ClientSocket) -> R
     {
         let clid = new_cl.clid.clone();
         println!("[register] client {:?}", clid);
         self.clients.insert(new_cl).await?;
-        let result = self.clients.search_mut_client(&clid, callback)
+        let result = self.clients.search_mut_client(&clid, |c| callback(&mut c.socket))
             .await
             .ok_or(format!("cannot inserting client {}", clid))?;
 
@@ -63,14 +63,14 @@ impl<'cp> BrokerMediator {
     /// wakeup session
     /// replacing old socket with incoming socket connection 
     pub async fn try_restore_connection<CB, R>(&self, clid: &ClientID, bucket: &mut UpdateClient, callback: CB) -> Result<R, String> 
-    where CB: FnOnce(&'cp mut Client) -> R
+    where CB: FnOnce(&'cp mut ClientSocket) -> R
     {
         let res = match self.clients.search_mut_client(clid, |c| {
             match c.restore_connection(bucket) {
                 Ok(_) => (),
                 Err(e) => return Err(e.to_string())
             };
-            Ok(callback(c))
+            Ok(callback(&mut c.socket))
         }).await 
         {
             None => return Err(String::from("Not found")),
@@ -159,7 +159,7 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
 
             let dur = Duration::from_secs(1);
             
-            let readed = match client.read_timeout(&mut buffer, dur).await {
+            let readed = match client.socket.read_timeout(&mut buffer, dur).await {
                 Ok(readed) => readed,
                 Err(_) => continue
             };
@@ -178,7 +178,7 @@ fn spawn_client<IQ, RO>(client: AtomicClient, msg_queue: IQ, router: RO)
             };
 
             match packet_received {
-                ClientPacketV5::PingReq => { let _ = client.write_all(&PING_RES).await; },
+                ClientPacketV5::PingReq => { let _ = client.socket.write_all(&PING_RES).await; },
                 ClientPacketV5::Publish(pub_packet) => queue_message(&msg_queue, &client.clid, pub_packet),
                 ClientPacketV5::Subscribe(sub_packet) => subscribe_topics(&router, client, sub_packet).await
             };
@@ -227,7 +227,7 @@ where RO: TopicRouter
     let buffer = response.encode().unwrap();
     let save = client.storage.clone();
     let save = save.subscribe(&sub_packet.list);
-    let net = client.write_all(&buffer);
+    let net = client.socket.write_all(&buffer);
     let (save, net) = tokio::join!(net, save);
     net.unwrap();
     save.unwrap();

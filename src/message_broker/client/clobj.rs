@@ -1,8 +1,8 @@
 use std::fmt::Display;
 
-use tokio::{io::{ReadHalf, WriteHalf}, net::TcpStream};
+use tokio::{io::{self, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf}, net::TcpStream};
 
-use crate::connection::line::{SecuredStream, SocketConnection};
+use crate::{connection::{handshake::MqttConnectedResponse, line::{SecuredStream, SocketConnection}, SocketReader, SocketWriter}, protocol::v5::connack::ConnackPacket};
 
 #[derive(Debug, Eq, Ord, Clone)]
 pub struct ClientID {
@@ -110,6 +110,7 @@ impl PartialOrd for ClientID {
     }
 }
 
+pub type ClientSocket = Socket<SecuredStream, TcpStream>;
 pub(super) enum SocketInner<S, P> {
     Secured(S),
     Plain(P)
@@ -138,5 +139,31 @@ impl Socket<SecuredStream, TcpStream> {
                 }
             }
         }
+    }
+}
+
+impl SocketWriter for Socket<SecuredStream, TcpStream> {
+    async fn write_all(&mut self, buffer: &[u8]) -> tokio::io::Result<()> {
+        match &mut self.w {
+            SocketInner::Plain(p) => p.write_all(buffer).await,
+            SocketInner::Secured(s) => s.write_all(buffer).await
+        }
+    }
+}
+
+impl SocketReader for Socket<SecuredStream, TcpStream> {
+    async fn read(&mut self, buffer: &mut [u8]) -> tokio::io::Result<usize> {
+        match &mut self.r {
+            SocketInner::Plain(p) => p.read(buffer).await,
+            SocketInner::Secured(s) => s.read(buffer).await
+        }
+    }
+}
+
+impl MqttConnectedResponse for Socket<SecuredStream, TcpStream> {
+    async fn connack<'a>(&'a mut self, ack: &'a ConnackPacket) -> io::Result<()> {
+        let mut packet = ack.encode().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let res = self.write_all(&mut packet).await;
+        res
     }
 }

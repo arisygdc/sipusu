@@ -167,7 +167,7 @@ impl SendStrategy for Clients
 impl Forwarder for Clients {
     async fn pubish(&self, con_id: &ClientID, packet: &[u8]) -> io::Result<()> {
         let found = self.search_mut_client(&con_id, |client| {
-            client.write_all(packet)
+            client.socket.write_all(packet)
         }).await;
     
         let res = match found {

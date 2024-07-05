@@ -1,4 +1,4 @@
-use std::{sync::{atomic::{fence, AtomicPtr, Ordering}, Arc}, time::Duration};
+use std::{sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use tokio::{io, sync::RwLock};
 use crate::{connection::SocketWriter, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}};
 use crate::protocol::v5::puback::{PubACKType, PubackPacket};
@@ -26,8 +26,6 @@ impl<'lc, 'st> Clients {
         let mut found = clients.len();
         let mut i = 0;
         'insert: while i < clients.len() {
-            fence(Ordering::Acquire);
-
             let clid = unsafe {
                 let load = clients[i].load(Ordering::Acquire);
                 if load.is_null() {
@@ -203,7 +201,7 @@ impl Cleanup for Clients {
                 }
                 
                 println!("killing {}", (*client.load(Ordering::Acquire)).clid);
-                (*client.load(Ordering::Acquire)).session.kill()
+                (*client.load(Ordering::Acquire)).kill()
             }
         }
 

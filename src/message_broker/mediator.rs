@@ -154,7 +154,7 @@ fn spawn_client<IQ, RO>(client: AtomicClient, spawn_counter: Arc<AtomicU64>, msg
             let client = unsafe {&mut *client.load(std::sync::atomic::Ordering::Relaxed)};
 
             let t = sys_now();
-            if !client.session.is_alive(t) {
+            if !client.is_alive(t) {
                 // Saving state
                 println!("[Client] {} dead", client.clid);
                 break 'lis;
@@ -169,13 +169,13 @@ fn spawn_client<IQ, RO>(client: AtomicClient, spawn_counter: Arc<AtomicU64>, msg
             
             if readed == 0 {
                 println!("[Client] {} killed", client.clid);
-                client.session.kill();
+                client.kill();
                 continue 'lis;
             }
 
             let incoming_packet = ClientPacketV5::decode(&mut buffer);
             let packet_received = incoming_packet.unwrap();
-            match client.session.keep_alive(t+1) {
+            match client.keep_alive(t+1) {
                 Ok(_) => {},
                 Err(_) => continue
             };

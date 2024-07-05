@@ -147,7 +147,7 @@ impl SessionController for Session {
         if self.ttl <= t {
             return Err(String::from("already expired"));
         }
-        self.ttl = t + self.keep_alive as u64;
+        self.ttl = t + (self.keep_alive + self.keep_alive/2) as u64;
         Ok(self.ttl)
     }
 

@@ -4,7 +4,7 @@ use tokio::{io, select, signal, task::JoinHandle, time};
 use crate::{
     connection::SocketWriter, ds::{
         linked_list::List, trie::Trie, GetFromQueue, InsertQueue 
-    }, helper::time::sys_now, message_broker::client::storage::{EventType, WALL}, protocol::{
+    }, helper::time::sys_now, message_broker::client::{storage::{EventType, WALL}, SAFETY_OFFTIME}, protocol::{
         mqtt::{ClientPacketV5, PING_RES}, 
         v5::{
             self,
@@ -164,7 +164,7 @@ fn spawn_client<IQ, RO>(client: AtomicClient, spawn_counter: Arc<AtomicU64>, msg
                 break 'lis;
             }
 
-            let dur = Duration::from_secs(1);
+            let dur = Duration::from_secs(SAFETY_OFFTIME);
             
             let readed = match client.socket.read_timeout(&mut buffer, dur).await {
                 Ok(readed) => readed,

@@ -70,12 +70,15 @@ impl Proxy {
                 response.session_present = true;
                 s.connack(&response)
             }).await;
-            println!("------------------------------------------");
-            if let Ok(fb) = restore_feedback {
-                fb.await.unwrap();
-                println!("client restored");
-                return  Ok(());
+            
+            match restore_feedback {
+                Ok(fb) => {
+                    fb.await.unwrap();
+                    println!("client restored");
+                    return  Ok(());
+                }, Err(err) => println!("{}", err.to_string())
             }
+            
             
             println!("failed to restore");
             conn = bucket.socket

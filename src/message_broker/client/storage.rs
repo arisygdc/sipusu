@@ -5,6 +5,9 @@ use tokio::{fs::{File, OpenOptions}, io::{self, AsyncReadExt, AsyncWriteExt, Buf
 use crate::{helper::time::sys_now, protocol::v5::{connect, subscribe::Subscribe, ServiceLevel}};
 use super::{clobj::ClientID, DATA_STORE};
 
+const METADATA: &str = "metadata";
+const SUBSCRIBE_DATA: &str = "subscribed";
+
 /// Always clone when use, this case do for pass the borrow checker. 
 /// 
 /// Still unoptimized
@@ -47,7 +50,7 @@ impl ClientStore {
 
         {
             let mut path = dir.clone();
-            path.push("subscribed");
+            path.push(SUBSCRIBE_DATA);
             let f = fopt.open(&path).await?;
             f.set_len(0).await?;
         }
@@ -55,11 +58,12 @@ impl ClientStore {
         let mut buffer = BytesMut::with_capacity(mdata.est_len());
         {
             let mut path = dir.clone();
-            path.push("metadata");
+            path.push(METADATA);
             let mut f = fopt.open(&path).await?;
             f.set_len(0).await?;
             mdata.serialize(&mut buffer);
             f.write_all(&buffer).await?;
+            f.flush().await?
         }
 
         Ok(Self { path: dir.to_owned() })
@@ -80,54 +84,49 @@ impl ClientStore {
         {
             let mut path = dir.clone();
             path.push("session");
-            if path.is_file() {
-                let f = fopt.open(&path).await?;
-                let mut reader = BufReader::new(f);
-                println!("read wall");
-                let wall = read_wall(&mut reader, &mut buffer).await?;
-                println!("readed wall");
-                let f = reader.into_inner();
-
-                for i in (0..wall.len()).rev() {
-                    // TODO: return error when session already restored
-                    match wall[i].value {
-                        EventType::ClientDisconnected(u) |
-                        EventType::DisconnectByServer(u) => {
-                            let is_expired = sys_now() >= u;
-                            if is_expired {
-                                println!("[Client] restore decline");
-                                return Err(io::Error::new(io::ErrorKind::TimedOut, "session expired")); 
-                            }
-                            
-                            println!("[Client] restore accepted");
-                            let mut writer = BufWriter::new(f);
-                            write_wall(
-                                &mut writer, 
-                                &[WALL{time: sys_now(), value: EventType::ClientRestored}]
-                            ).await?;
-                            break;
-                        }, _ => {}
-                    }
-                }
+            if !path.is_file() {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "no session"));
             }
+            fopt.write(true);
+            let f = fopt.open(&path).await?;
+            fopt.write(false);
+            let mut reader = BufReader::new(f);
+            let wall = read_wall(&mut reader, &mut buffer).await?;
+            let f = reader.into_inner();
+            let u = match wall[wall.len() - 1].value {
+                EventType::ClientRestored => return Err(io::Error::new(io::ErrorKind::AddrInUse, "session already restored")),
+                EventType::ClientDisconnected(u) | EventType::DisconnectByServer(u) => u, 
+                _ => return Err(io::Error::new(io::ErrorKind::Other, "session maybe still online"))
+            };
+
+            let is_expired = sys_now() >= u;
+            if is_expired {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "session expired")); 
+            }
+            
+            let mut writer = BufWriter::new(f);
+            write_wall(
+                &mut writer, 
+                &[WALL{time: sys_now(), value: EventType::ClientRestored}]
+            ).await?;
         }
 
         
         let mdata = {
             let mut path = dir.clone();
-            path.push("metadata");
-            let mut f = fopt.open(&path).await?;
-            let read_mdata = f.read(&mut buffer).await?;
+            path.push(METADATA);
+            let mut reader = BufReader::new(fopt.open(&path).await?);
+            let read_mdata = reader.read(&mut buffer).await?;
             if read_mdata < 13 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "metadata structure is invalid"));
             }
-            let mut b = buffer.split_off(read_mdata);
+            let mut b = buffer.split_to(read_mdata).freeze();
             MetaData::deserialize(&mut b)
         };
         
         let subbed: Vec<Subscribe> = {
             let mut path = dir.clone();
-            path.push("subscribed");
+            path.push(SUBSCRIBE_DATA);
             let f = fopt.open(&path).await?;
             let mut reader = BufReader::new(f);
             let mut maps = HashMap::new();
@@ -177,11 +176,6 @@ impl ClientStore {
                 None => {map.insert(sub.topic.clone(), sub.max_qos.clone());}
             }
         }
-
-        // let seek_pos = match rewrite {
-        //     true => SeekFrom::Start(0),
-        //     false => SeekFrom::Start(readed as u64)
-        // };
 
         let f = reader.into_inner();
         f.set_len(0).await?;
@@ -321,14 +315,6 @@ impl MetaData {
                 buffer.put_u8(0x0A);
             }
         }
-
-        // will leng
-        // buffer.put_u32(self.est_will() as u32);
-
-        // // will
-        // if let Some(will) = &self.will {
-        //     will.serialize(buffer);
-        // }
     }
 
     fn est_user_prop(&self) -> usize {
@@ -340,15 +326,11 @@ impl MetaData {
     }
 
     fn est_len(&self) -> usize {
-        // base val | user_properties leng | user_properties 
         13 + 4 + self.est_user_prop()
     }
 
-    // fn est_will(&self) -> usize {
-    //     self.will.as_ref().map(|w| w.est_len()).unwrap_or_default()
-    // }
 
-    fn deserialize(buffer: &mut BytesMut) -> Self {
+    fn deserialize(buffer: &mut Bytes) -> Self {
         let mut new = Self {
             protocol_level: buffer.get_u8(),
             keep_alive_interval: buffer.get_u16(),
@@ -403,7 +385,7 @@ impl Will {
         2 + self.topic.len() + self.payload.len()
     }
 
-    fn deserialize(buffer: &mut BytesMut) -> Self {
+    fn deserialize(buffer: &mut Bytes) -> Self {
         let mut new = Self::default();
         new.topic = deserialize_string(buffer);
         new.payload = buffer.to_vec();
@@ -416,7 +398,7 @@ fn serialize_string(buffer: &mut BytesMut, val: &str) {
     buffer.put(val.as_bytes());
 }
 
-fn deserialize_string(buffer: &mut BytesMut) -> String {
+fn deserialize_string(buffer: &mut Bytes) -> String {
     let len = buffer.get_u16();
     let b = buffer.split_to(len as usize);
     String::from_utf8(b.to_vec()).unwrap()
@@ -447,9 +429,6 @@ pub struct WALL {
 
 impl WALL {
     fn deserialize(b: &mut Bytes) -> io::Result<Self> {
-        // let mut time = b.split_to(10);
-        // time.advance(1);
-        // let time = time.get_u64();
         let value = unsafe{String::from_utf8_unchecked(b.to_vec())};
         let value = value.trim();
         let mut part = value.split_ascii_whitespace();
@@ -505,19 +484,13 @@ async fn read_wall(reader: &mut BufReader<File>, buffer: &mut BytesMut) -> io::R
         let mut read = buffer.split_to(n);
         let mut i = 0;
         while read.len() > 0 {
-            // println!("{}. {}", i, read[i]);
             let is_separator = read[i] == 0x0A;
             i += 1;
             if !is_separator {
                 continue;
             }
 
-            // while read[i] != 0x0A {
-            //     i += 1
-            // }
-
             let mut b = read.split_to(i).freeze();
-            println!("{:?}", b);
             let des = WALL::deserialize(&mut b)?;
             wall.push(des);
             i = 0;

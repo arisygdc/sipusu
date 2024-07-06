@@ -82,13 +82,13 @@ impl Client {
 
     pub async fn restore(clid: ClientID, bucket: &mut UpdateClient) -> io::Result<Self> {
         let restored = ClientStore::restore(&clid).await?;
-        println!("{:?}", restored);
+        println!("[Client] {} restored", clid);
         let keep_alive = restored.mdata.keep_alive_interval;
         let socket = Socket::new(bucket.socket.take().unwrap());
         
         Ok(Self {
             storage: restored.storage,
-            clid: clid,
+            clid,
             conid: bucket.conid.take().unwrap(),
             limit: Limiter { 
                 receive_maximum: to_opt(restored.mdata.receive_maximum), 

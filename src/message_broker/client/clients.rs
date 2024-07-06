@@ -2,7 +2,7 @@ use std::{sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use tokio::{io, sync::RwLock};
 use crate::{connection::SocketWriter, helper::time::sys_now, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}};
 use crate::protocol::v5::puback::{PubACKType, PubackPacket};
-use super::{client::Client, clobj::ClientID, SessionController};
+use super::{client::Client, clobj::ClientID, SessionController, SAFETY_OFFTIME};
 
 pub type AtomicClient = Arc<AtomicPtr<Client>>;
 type MutexClients = RwLock<Vec<AtomicClient>>;
@@ -21,19 +21,21 @@ impl<'lc, 'st> Clients {
     /// insert sort by conn number
     pub async fn insert(&self, new_cl: Client) -> Result<(), String> {
         let new_clid = new_cl.clid.clone();
+        let new_cl = Box::new(new_cl);
+        
         let mut clients = self.list.write().await;
-
         let mut found = clients.len();
+        let mut swap = false;
         let mut i = 0;
         'insert: while i < clients.len() {
             let clid = unsafe {&(*clients[i].load(Ordering::Relaxed)).clid};
             match new_clid.cmp(clid) {
                 std::cmp::Ordering::Equal => {
-                    let is_available = unsafe {(*clients[i].load(Ordering::Relaxed)).is_alive(sys_now())};
+                    let is_available = unsafe {(*clients[i].load(Ordering::Relaxed)).is_alive(sys_now() + SAFETY_OFFTIME)};
                     if is_available {
                         return Err("duplicate client id".to_string())
                     }
-                    clients.remove(i);
+                    swap = true;
                 },
                 std::cmp::Ordering::Greater => {
                     i += 1;
@@ -46,11 +48,16 @@ impl<'lc, 'st> Clients {
             break 'insert;
         }
 
-        let new_cl = Box::new(new_cl);
         let p = Box::into_raw(new_cl);
-        let new_cl = AtomicPtr::new(p);
-        let new_cl = Arc::new(new_cl);
-        clients.insert(found, new_cl);
+        if swap {
+            let odl_cl = clients[i].swap(p, Ordering::AcqRel);
+            drop(clients);
+            unsafe{drop(Box::from_raw(odl_cl))}
+        } else {
+            let new_cl = AtomicPtr::new(p);
+            let new_cl = Arc::new(new_cl);
+            clients.insert(found, new_cl);
+        }
 
         Ok(())
     }

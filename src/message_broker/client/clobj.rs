@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use tokio::{io::{self, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf}, net::TcpStream};
 
-use crate::{connection::{handshake::MqttConnectedResponse, line::{SecuredStream, SocketConnection}, SocketReader, SocketWriter}, protocol::v5::connack::ConnackPacket};
+use crate::{connection::{handshake::MqttConnectedResponse, line::{SecuredStream, SocketConnection}, SocketReader, SocketWriter}, helper::time::sys_now, protocol::v5::connack::ConnackPacket};
 
 use super::SessionController;
 
@@ -114,8 +114,8 @@ impl PartialOrd for ClientID {
 
 pub struct Session {
     pub(super) ttl: u64,
-    pub(super) keep_alive: u16,
     pub(super) expr_interval: u32,
+    pub(super) keep_alive: u16,
 }
 
 #[derive(Default)]
@@ -134,13 +134,14 @@ impl Limiter {
         Self { maximum_packet_size, receive_maximum, topic_alias_maximum }
     }
 }
+
 impl SessionController for Session {
     fn is_alive(&self, t: u64) -> bool {
         self.ttl >= t
     }
 
     fn is_expired(&self, t: u64) -> bool {
-        (self.expr_interval as u64 + self.ttl) <= t
+        self.expiration_time() <= t
     }
 
     fn keep_alive(&mut self, t: u64) -> Result<u64, String> {
@@ -151,8 +152,12 @@ impl SessionController for Session {
         Ok(self.ttl)
     }
 
+    fn expiration_time(&self) -> u64 {
+        self.expr_interval as u64 + self.ttl
+    }
+
     fn kill(&mut self) {
-        self.ttl = 0;
+        self.ttl = sys_now() -1 ;
     }
 }
 

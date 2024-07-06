@@ -48,10 +48,16 @@ impl Proxy {
         srv_var: ServerVariable
     ) -> Result<(), String> {
         let mut conn = conn;
-        let session_exists = self.broker.session_exists(&srv_var.clid).await;
-        if !srv_var.clean_start && session_exists {
-            // TODO: change client state from incoming request
-            // TODO: response ack
+        let session = self.broker.is_still_alive(&srv_var.clid).await;
+        if let Some(still_alive) = session {
+            if still_alive {
+                // TODO: send disconnect with response code
+                return Err("()".to_string());
+            }
+        }
+
+        if !srv_var.clean_start {
+            println!("try restoring connection");
             let mut bucket = UpdateClient {
                 conid: Some(connid.clone()),
                 keep_alive: Some(srv_var.keep_alive),
@@ -59,23 +65,22 @@ impl Proxy {
                 socket: Some(conn)
             };
 
-            let restore_feedback = self.broker.try_restore_connection(&srv_var.clid, &mut bucket, |s| {
+            let restore_feedback = 
+            self.broker.try_restore_session(srv_var.clid.clone(), &mut bucket, |s| {
                 response.session_present = true;
                 s.connack(&response)
             }).await;
-
+            println!("------------------------------------------");
             if let Ok(fb) = restore_feedback {
                 fb.await.unwrap();
+                println!("client restored");
                 return  Ok(());
             }
             
+            println!("failed to restore");
             conn = bucket.socket
                 .take()
                 .unwrap();
-        }
-        
-        if session_exists {
-            self.broker.remove(&srv_var.clid).await.unwrap();
         }
 
         let mut limit = Limiter::default();
@@ -90,7 +95,7 @@ impl Proxy {
         let client = Client::new(
             connid, 
             conn, 
-            srv_var.clid, 
+            srv_var.clid.clone(), 
             srv_var.keep_alive,
             srv_var.expr_interval,
             srv_var.protocol_level,

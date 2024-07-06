@@ -80,41 +80,14 @@ impl Client {
         }
     }
 
-    // TODO: Error type
-    #[deprecated]
-    pub fn restore_connection(&mut self, bucket: &mut UpdateClient) -> io::Result<()> {
-
-        let now = sys_now();
-        if !self.session.is_alive(now) && self.session.is_expired(now) {
-           return Err(io::Error::new(io::ErrorKind::Other, String::from("connection is expired"))); 
-        }
-
-        match bucket.socket.take() {
-            Some(s) => self.socket = Socket::new(s),
-            None => panic!("empty connection")
-        };
-
-        if let Some(keep_alive) = bucket.keep_alive.take() {
-            self.session.keep_alive = keep_alive;
-        }
-
-        if let Some(connid) = bucket.conid.take() {
-            self.conid = connid;
-        }
-
-        if let Some(pr_lvl) = bucket.protocol_level.take() {
-            self.protocol_level = pr_lvl;
-        }
-
-        Ok(())
-    }
-
     pub async fn restore(clid: ClientID, bucket: &mut UpdateClient) -> io::Result<Self> {
-        let restored = ClientStore::load(&clid).await?;
+        let restored = ClientStore::restore(&clid).await?;
+        println!("{:?}", restored);
         let keep_alive = restored.mdata.keep_alive_interval;
         let socket = Socket::new(bucket.socket.take().unwrap());
+        
         Ok(Self {
-            storage: ClientStore::new(&clid, &restored.mdata).await?,
+            storage: restored.storage,
             clid: clid,
             conid: bucket.conid.take().unwrap(),
             limit: Limiter { 
@@ -148,6 +121,10 @@ impl SessionController for Client {
 
     fn is_expired(&self, t: u64) -> bool {
         self.session.is_expired(t)
+    }
+
+    fn expiration_time(&self) -> u64 {
+        self.session.expiration_time()
     }
 
     fn keep_alive(&mut self, t: u64) -> Result<u64, String> {

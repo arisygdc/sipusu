@@ -65,7 +65,7 @@ impl ClientStore {
         Ok(Self { path: dir.to_owned() })
     }
 
-    pub(super) async fn load(clid: &ClientID) -> io::Result<Restored> {
+    pub(super) async fn restore(clid: &ClientID) -> io::Result<Restored> {
         let mut dir = env::current_dir()?;
         dir.push(DATA_STORE);
         dir.push(clid.to_string());
@@ -83,24 +83,30 @@ impl ClientStore {
             if path.is_file() {
                 let f = fopt.open(&path).await?;
                 let mut reader = BufReader::new(f);
+                println!("read wall");
                 let wall = read_wall(&mut reader, &mut buffer).await?;
+                println!("readed wall");
                 let f = reader.into_inner();
 
                 for i in (0..wall.len()).rev() {
                     // TODO: return error when session already restored
-                    if let EventType::SetExpired(u) =  wall[i].value {
-                        let is_expired = sys_now() >= u;
-                        if is_expired {
-                           return Err(io::Error::new(io::ErrorKind::TimedOut, "session expired")); 
-                        }
-                        
-                        let mut writer = BufWriter::new(f);
-                        write_wall(
-                            &mut writer, 
-                            &[WALL{time: sys_now(), value: EventType::ClientRestored}]
-                        ).await?;
-
-                        break;
+                    match wall[i].value {
+                        EventType::ClientDisconnected(u) |
+                        EventType::DisconnectByServer(u) => {
+                            let is_expired = sys_now() >= u;
+                            if is_expired {
+                                println!("[Client] restore decline");
+                                return Err(io::Error::new(io::ErrorKind::TimedOut, "session expired")); 
+                            }
+                            
+                            println!("[Client] restore accepted");
+                            let mut writer = BufWriter::new(f);
+                            write_wall(
+                                &mut writer, 
+                                &[WALL{time: sys_now(), value: EventType::ClientRestored}]
+                            ).await?;
+                            break;
+                        }, _ => {}
                     }
                 }
             }
@@ -133,9 +139,11 @@ impl ClientStore {
                 }
             }).collect()
         };
+
         Ok(Restored{
             mdata,
-            subs: subbed
+            subs: subbed,
+            storage: ClientStore { path: dir }
         })
     }
 
@@ -281,6 +289,7 @@ async fn write_subscribed(writer: &mut BufWriter<File>, map: &mut HashMap<String
     Ok(est_leng)
 }
 
+#[derive(Debug)]
 pub(super) struct MetaData {
     pub(super) protocol_level: u8,
     pub(super) keep_alive_interval: u16,
@@ -413,34 +422,39 @@ fn deserialize_string(buffer: &mut BytesMut) -> String {
     String::from_utf8(b.to_vec()).unwrap()
 }
 
+#[derive(Debug)]
 pub struct Restored {
     pub(super) mdata: MetaData,
     // pub(super) will: Option<Will>,
-    pub(super) subs: Vec<Subscribe>
+    pub(super) subs: Vec<Subscribe>,
+    pub(super) storage: ClientStore
 }
 
 #[derive(Debug)]
-enum EventType {
+pub enum EventType {
     ClientCreated,
-    ClientDisconnected,
-    DisconnectByServer,
+    // disconnect value is expiration time
+    ClientDisconnected(u64),
+    DisconnectByServer(u64),
     ClientRestored,
-    SetExpired(u64),
 }
 
+#[derive(Debug)]
 pub struct WALL {
-    time: u64,
-    value: EventType,
+    pub time: u64,
+    pub value: EventType,
 }
 
 impl WALL {
     fn deserialize(b: &mut Bytes) -> io::Result<Self> {
-        let mut time = b.split_to(5);
-        time.advance(1);
-        let time = time.get_u64();
+        // let mut time = b.split_to(10);
+        // time.advance(1);
+        // let time = time.get_u64();
         let value = unsafe{String::from_utf8_unchecked(b.to_vec())};
         let value = value.trim();
         let mut part = value.split_ascii_whitespace();
+        let time = part.next().unwrap();
+        let time = time.parse::<u64>().unwrap();
 
         let part1 = part.next()
             .ok_or(
@@ -452,13 +466,15 @@ impl WALL {
 
         let value = match part1 {
             "ClientCreated" => EventType::ClientCreated,
-            "ClientDisconnected" => EventType::ClientDisconnected,
-            "DisconnectByServer" => EventType::DisconnectByServer,
-            "ClientRestored" => EventType::ClientRestored,
-            "SetExpired" => EventType::SetExpired({
+            "ClientDisconnected" => EventType::ClientDisconnected({
                 let part2 = part.next().ok_or(io::Error::new(io::ErrorKind::InvalidData, "no value for set expiration"))?;
                 part2.parse::<u64>().map_err(|_|io::Error::new(io::ErrorKind::InvalidData, "invalid expiration number"))?
             }),
+            "DisconnectByServer" => EventType::DisconnectByServer({
+                let part2 = part.next().ok_or(io::Error::new(io::ErrorKind::InvalidData, "no value for set expiration"))?;
+                part2.parse::<u64>().map_err(|_|io::Error::new(io::ErrorKind::InvalidData, "invalid expiration number"))?
+            }),
+            "ClientRestored" => EventType::ClientRestored,
             _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "not registered eventt"))
         };
 
@@ -466,15 +482,12 @@ impl WALL {
     }
 
     fn serialize(&self, buffer: &mut BytesMut) {
-        buffer.put_u8(0x5B);
-        buffer.put_u64(self.time);
-        buffer.put_u8(0x5D);
+        buffer.put(format!("{} ",self.time).as_bytes());
         let val = match self.value {
             EventType::ClientCreated => "ClientCreated",
-            EventType::ClientDisconnected => "ClientDisconnected",
-            EventType::DisconnectByServer => "DisconnectByServer",
+            EventType::ClientDisconnected(u) => &format!("ClientDisconnected {}", u),
+            EventType::DisconnectByServer(u) => &format!("DisconnectByServer {}", u),
             EventType::ClientRestored => "ClientRestored",
-            EventType::SetExpired(u) => &format!("SetExpired {}", u)
         };
 
         buffer.put(val.as_bytes());
@@ -489,25 +502,30 @@ async fn read_wall(reader: &mut BufReader<File>, buffer: &mut BytesMut) -> io::R
             break;
         }
 
-        let read = buffer.split_to(n);
-        
-        for i in 0..read.len() {
-            if read[i] != 0x5B {
+        let mut read = buffer.split_to(n);
+        let mut i = 0;
+        while read.len() > 0 {
+            // println!("{}. {}", i, read[i]);
+            let is_separator = read[i] == 0x0A;
+            i += 1;
+            if !is_separator {
                 continue;
             }
 
-            'j: for (j, v) in read.iter().enumerate() {
-                if v == &0x0A {
-                    let b = read[i..j].to_vec();
-                    let mut b = Bytes::from(b);
-                    wall.push(WALL::deserialize(&mut b)?);
-                    break 'j;
-                }
-            }
-            
+            // while read[i] != 0x0A {
+            //     i += 1
+            // }
+
+            let mut b = read.split_to(i).freeze();
+            println!("{:?}", b);
+            let des = WALL::deserialize(&mut b)?;
+            wall.push(des);
+            i = 0;
         }
-        buffer.clear();
-    }    
+
+        buffer.reserve(n);
+        buffer.put_bytes(0, n);
+    }
     Ok(wall)
 }
 

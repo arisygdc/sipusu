@@ -1,13 +1,10 @@
 use std::{sync::{atomic::{AtomicU64, Ordering}, Arc}, time::Duration};
-use bytes::BytesMut;
-use tokio::{select, signal, task::JoinHandle, time};
+use bytes::{BufMut, BytesMut};
+use tokio::{io, select, signal, task::JoinHandle, time};
 use crate::{
-    connection::SocketWriter, 
-    ds::{
+    connection::SocketWriter, ds::{
         linked_list::List, trie::Trie, GetFromQueue, InsertQueue 
-    }, 
-    helper::time::sys_now, 
-    protocol::{
+    }, helper::time::sys_now, message_broker::client::storage::{EventType, WALL}, protocol::{
         mqtt::{ClientPacketV5, PING_RES}, 
         v5::{
             self,
@@ -62,31 +59,28 @@ impl<'cp> BrokerMediator {
         Ok(result)
     }
 
-    /// wakeup session
-    /// replacing old socket with incoming socket connection 
-    pub async fn try_restore_connection<CB, R>(&self, clid: &ClientID, bucket: &mut UpdateClient, callback: CB) -> Result<R, String> 
+    pub async fn try_restore_session<CB, R>(&self, clid: ClientID, bucket: &mut UpdateClient, callback: CB) -> io::Result<R> 
     where CB: FnOnce(&'cp mut ClientSocket) -> R
     {
-        let res = match self.clients.search_mut_client(clid, |c| {
-            match c.restore_connection(bucket) {
-                Ok(_) => (),
-                Err(e) => return Err(e.to_string())
-            };
-            Ok(callback(&mut c.socket))
-        }).await 
-        {
-            None => return Err(String::from("Not found")),
-            Some(res) => res
-        };
-        res
+        let client = Client::restore(clid.clone(), bucket).await?;
+        self.clients.insert(client).await.unwrap();
+        let client = unsafe{self.clients.get_client(&clid).await};
+        let client = client.ok_or(io::Error::new(io::ErrorKind::Other, "unknown error"))?;
+        let ret = callback(unsafe {
+            &mut (*client.load(Ordering::Acquire)).socket
+        });
+        let queue = self.message_queue.clone();
+        let router = self.router.clone();
+        spawn_client(client, self.spawn_counter.clone(), queue, router);
+        Ok(ret)
     }
 
-    pub async fn session_exists(&self, clid: &ClientID) -> bool {
-        self.clients.session_exists(clid).await
-    }
-
-    pub async fn remove(&self, clid: &ClientID) -> Result<(), String> {
-        self.clients.remove(clid).await
+    pub async fn is_still_alive(&self, clid: &ClientID) -> Option<bool> {
+        let t = sys_now();
+        self.clients.search_mut_client(clid, |c| {
+            c.is_alive(t)
+        })
+        .await
     }
 
     pub fn join_handle(&self) -> JoinHandle<()> {
@@ -155,7 +149,17 @@ fn spawn_client<IQ, RO>(client: AtomicClient, spawn_counter: Arc<AtomicU64>, msg
 
             let t = sys_now();
             if !client.is_alive(t) {
-                // Saving state
+                let log = client.storage.clone();
+
+                let sevent = WALL{
+                    time: t+1, 
+                    value: EventType::DisconnectByServer(client.expiration_time())
+                };
+
+                log.log_session(&[sevent])
+                .await
+                .unwrap();
+
                 println!("[Client] {} dead", client.clid);
                 break 'lis;
             }
@@ -164,16 +168,32 @@ fn spawn_client<IQ, RO>(client: AtomicClient, spawn_counter: Arc<AtomicU64>, msg
             
             let readed = match client.socket.read_timeout(&mut buffer, dur).await {
                 Ok(readed) => readed,
-                Err(_) => continue
+                Err(err) => {
+                    if err.kind() == io::ErrorKind::TimedOut {
+                        continue 'lis;
+                    }
+
+                    let log = client.storage.clone();
+                    let sevent = WALL{
+                        time: t+1, 
+                        value: EventType::ClientDisconnected(client.expiration_time())
+                    };
+
+                    log.log_session(&[sevent])
+                        .await
+                        .unwrap();
+
+                    break 'lis;
+                }
             };
             
             if readed == 0 {
-                println!("[Client] {} killed", client.clid);
                 client.kill();
                 continue 'lis;
             }
 
-            let incoming_packet = ClientPacketV5::decode(&mut buffer);
+            let mut packet_buf = buffer.split_to(readed);
+            let incoming_packet = ClientPacketV5::decode(&mut packet_buf);
             let packet_received = incoming_packet.unwrap();
             match client.keep_alive(t+1) {
                 Ok(_) => {},
@@ -185,7 +205,9 @@ fn spawn_client<IQ, RO>(client: AtomicClient, spawn_counter: Arc<AtomicU64>, msg
                 ClientPacketV5::Publish(pub_packet) => queue_message(&msg_queue, &client.clid, pub_packet),
                 ClientPacketV5::Subscribe(sub_packet) => subscribe_topics(&router, client, sub_packet).await
             };
-            buffer.reserve(1024);
+            
+            buffer.reserve(readed);
+            buffer.put_bytes(0, readed);
         }
 
         spawn_counter.fetch_sub(1, Ordering::AcqRel);

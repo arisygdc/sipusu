@@ -1,6 +1,6 @@
 use std::{sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
 use tokio::{io, sync::RwLock};
-use crate::{connection::SocketWriter, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}};
+use crate::{connection::SocketWriter, helper::time::sys_now, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}};
 use crate::protocol::v5::puback::{PubACKType, PubackPacket};
 use super::{client::Client, clobj::ClientID, SessionController};
 
@@ -26,19 +26,19 @@ impl<'lc, 'st> Clients {
         let mut found = clients.len();
         let mut i = 0;
         'insert: while i < clients.len() {
-            let clid = unsafe {
-                let load = clients[i].load(Ordering::Acquire);
-                if load.is_null() {
-                    clients.remove(i);
-                    continue 'insert;
-                }
-                &(*load).clid
-            };
-
-            i += 1;
+            let clid = unsafe {&(*clients[i].load(Ordering::Relaxed)).clid};
             match new_clid.cmp(clid) {
-                std::cmp::Ordering::Equal => return Err("duplicate client id".to_string()),
-                std::cmp::Ordering::Greater => continue 'insert,
+                std::cmp::Ordering::Equal => {
+                    let is_available = unsafe {(*clients[i].load(Ordering::Relaxed)).is_alive(sys_now())};
+                    if is_available {
+                        return Err("duplicate client id".to_string())
+                    }
+                    clients.remove(i);
+                },
+                std::cmp::Ordering::Greater => {
+                    i += 1;
+                    continue 'insert
+                },
                 std::cmp::Ordering::Less => ()
             }
             
@@ -56,7 +56,7 @@ impl<'lc, 'st> Clients {
     }
 
     // TODO: Create Garbage collector
-    #[allow(dead_code)]
+    #[deprecated]
     pub async fn remove(&self, clid: &ClientID) -> Result<(), String> {
         let mut clients = self.list.write().await;
         let idx = clients.binary_search_by(|c| unsafe {
@@ -85,6 +85,7 @@ impl<'lc, 'st> Clients {
         Some(f(cl))
     }
 
+    #[deprecated]
     pub async fn session_exists(&self, clid: &ClientID) -> bool {
         let clients = self.list.read().await;
         clients.binary_search_by(|c| unsafe {

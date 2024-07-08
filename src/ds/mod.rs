@@ -1,3 +1,5 @@
+use std::io;
+
 pub mod linked_list;
 pub mod trie;
 
@@ -6,5 +8,5 @@ pub trait InsertQueue<T: Default> {
 }
 
 pub trait GetFromQueue<T: Default> {
-    fn dequeue(&self) -> Option<T>;
+    async fn dequeue(&self) -> io::Result<T>;
 }

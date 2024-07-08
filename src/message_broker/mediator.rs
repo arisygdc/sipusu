@@ -1,9 +1,9 @@
 use std::{sync::{atomic::{AtomicU64, Ordering}, Arc}, time::Duration};
 use bytes::{BufMut, BytesMut};
-use tokio::{io, select, signal, task::JoinHandle, time};
+use tokio::{io, select, signal, task::JoinHandle};
 use crate::{
     connection::SocketWriter, ds::{
-        linked_list::List, trie::Trie, GetFromQueue, InsertQueue 
+        trie::Trie, GetFromQueue, InsertQueue 
     }, helper::time::sys_now, message_broker::client::{storage::{EventType, WALL}, SAFETY_OFFTIME}, protocol::{
         mqtt::{ClientPacketV5, PING_RES}, 
         v5::{
@@ -19,14 +19,14 @@ use crate::connection::SocketReader;
 use super::{
     cleanup::Cleanup, client::{
         client::{Client, UpdateClient}, clients::{AtomicClient, Clients}, clobj::{ClientID, ClientSocket}, SessionController
-    }, message::{Message, MessageQueue}, SendStrategy
+    }, message::{Message, Queue}, SendStrategy
 };
 
 pub type RouterTree = Arc<Trie<SubscriberInstance>>;
 
 pub struct BrokerMediator {
     clients: Clients,
-    message_queue: MessageQueue,
+    message_queue: Queue,
     spawn_counter: Arc<AtomicU64>,
     router: RouterTree,
 }
@@ -34,7 +34,7 @@ pub struct BrokerMediator {
 impl BrokerMediator {
     pub async fn new() -> Self {
         let clients = Clients::new().await;
-        let message_queue = Arc::new(List::new());
+        let message_queue = Queue::new();
         let router = Arc::new(Trie::new());
         let spawn_counter =  Arc::new(AtomicU64::default());
         Self{ clients, message_queue, spawn_counter, router }
@@ -275,13 +275,21 @@ async fn observer<RO, DM, F> (
                 msg_queue.clear().await;
                 break 'observer;
             },
-            msg = wait_message(&msg_queue, &router) => {
+            msg = msg_queue.dequeue() => {
                 let msg = match msg {
                     Ok(v) => v,
                     Err(_) => continue 'observer
                 };
+                println!("{:?}", msg.packet);
+                let subs = match router.route(&msg.packet.topic).await {
+                    None => {
+                        println!("no subscriber");
+                        continue 'observer
+                    },
+                    Some(s) => s
+                };
                 
-                let (msg, subs) = msg;
+                // let (msg, subs) = msg;
                 publish(forwarder.clone(), msg, subs).await
             }
         }
@@ -289,23 +297,22 @@ async fn observer<RO, DM, F> (
     println!("[observer] shutdown");
 }
 
-async fn wait_message<DM, RO>(msg_queue: &DM, router: &RO) -> Result<(Message, Vec<SubscriberInstance>), String>
-where 
-    DM: GetFromQueue<Message>,
-    RO: TopicRouter,
-{
-    if let Some(msg) = msg_queue.dequeue() {
-
-        let to = router.route(&msg.packet.topic).await;
-        let dst = match to {
-            None => return Err(format!("no subscriber for topic {}", &msg.packet.topic)),
-            Some(dst) => dst
-        };
-        return Ok((msg, dst));
-    }
-    time::sleep(Duration::from_millis(10)).await;
-    Err(String::from("no message"))
-}
+// async fn wait_message<DM, RO>(msg_queue: &DM, router: &RO) -> Result<(Message, Vec<SubscriberInstance>), String>
+// where 
+//     DM: GetFromQueue<Message>,
+//     RO: TopicRouter,
+// {
+//     if let Some(msg) = msg_queue.dequeue() {
+//         let to = router.route(&msg.packet.topic).await;
+//         let dst = match to {
+//             None => return Err(format!("no subscriber for topic {}", &msg.packet.topic)),
+//             Some(dst) => dst
+//         };
+//         return Ok((msg, dst));
+//     }
+//     time::sleep(Duration::from_millis(10)).await;
+//     Err(String::from("no message"))
+// }
 
 pub async fn publish<F>(forwarder: F, msg: Message, subs: Vec<SubscriberInstance>) 
 where 

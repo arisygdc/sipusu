@@ -1,4 +1,4 @@
-use std::{mem, ptr, sync::atomic::{AtomicPtr, Ordering}};
+use std::{ptr, sync::atomic::{AtomicPtr, Ordering}};
 
 use crate::message_broker::cleanup::Cleanup;
 
@@ -64,10 +64,8 @@ impl<T> List<T> {
     }
 }
 
-impl<T: Default> List<T> {
+impl<T> List<T> {
     pub fn take_first(&self) -> Option<T> {
-        let default;
-
         let head = self.head.load(Ordering::Acquire);
         if head.is_null() {
             return None;
@@ -78,13 +76,12 @@ impl<T: Default> List<T> {
             self.head.compare_exchange(
                 head, 
                 next, 
-                Ordering::Relaxed, 
+                Ordering::Release, 
                 Ordering::Relaxed
             ).ok()?
         };
-        let mut cast = unsafe{Box::from_raw(head)};
-        default = mem::take(&mut cast.val);
-        Some(default)
+        let cast = unsafe{Box::from_raw(head)};
+        Some(cast.val)
     }
 }
 

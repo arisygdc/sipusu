@@ -55,38 +55,36 @@ impl<'cp> BrokerMediator {
         let clid = new_cl.clid.clone();
         println!("[register] client {:?}", clid);
         self.clients.insert(new_cl).await?;
-        let result = self.clients.search_mut_client(&clid, |c| callback(&mut c.socket))
-            .await
-            .ok_or(format!("cannot inserting client {}", clid))?;
 
         let client = unsafe{self.clients.get_client(&clid)}.await.unwrap();
-        let queue = self.message_queue.clone();
-        let router = self.router.clone();
+        let ret = callback(unsafe {
+            &mut (*client.load(Ordering::Acquire)).socket
+        });
+
         self.tasks.spawn(
             client, 
-            queue, 
-            router
+            self.message_queue.clone(), 
+            self.router.clone()
         ).await;
-        Ok(result)
+        Ok(ret)
     }
 
     pub async fn try_restore_session<CB, R>(&self, clid: ClientID, bucket: &mut UpdateClient, callback: CB) -> io::Result<R> 
     where CB: FnOnce(&'cp mut ClientSocket) -> R
     {
-        let client = Client::restore(clid.clone(), bucket).await?;
-        self.clients.insert(client).await.unwrap();
+        let restored_client = Client::restore(clid.clone(), bucket).await?;
+        self.clients.insert(restored_client).await.unwrap();
         let client = unsafe{self.clients.get_client(&clid).await};
         let client = client.ok_or(io::Error::new(io::ErrorKind::Other, "unknown error"))?;
         let ret = callback(unsafe {
             &mut (*client.load(Ordering::Acquire)).socket
         });
+
         let client = unsafe{self.clients.get_client(&clid)}.await.unwrap();
-        let queue = self.message_queue.clone();
-        let router = self.router.clone();
         self.tasks.spawn(
             client, 
-            queue, 
-            router
+            self.message_queue.clone(), 
+            self.router.clone()
         ).await;
         Ok(ret)
     }

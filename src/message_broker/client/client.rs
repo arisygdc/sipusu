@@ -34,8 +34,6 @@ pub struct Client {
 pub struct UpdateClient {
     pub conid: Option<ConnectionID>,
     pub socket: Option<SocketConnection>,
-    pub protocol_level: Option<u8>,
-    pub keep_alive: Option<u16>,
 }
 
 // keepalive min value: 60

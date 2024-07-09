@@ -60,8 +60,6 @@ impl Proxy {
             println!("try restoring connection");
             let mut bucket = UpdateClient {
                 conid: Some(connid.clone()),
-                keep_alive: Some(srv_var.keep_alive),
-                protocol_level: Some(srv_var.protocol_level),
                 socket: Some(conn)
             };
 
@@ -105,11 +103,10 @@ impl Proxy {
             limit
         ).await;
 
-        self.broker.register(client, |s| {
-            s.connack(&response)
-        })
-        .await.unwrap()
-        .await.unwrap();
+        let cb = self.broker.register(client, |s| async {
+            s.connack(&response).await
+        }).await.unwrap();
+        cb.await.unwrap();
         Ok(())
     }
 

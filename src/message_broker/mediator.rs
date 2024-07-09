@@ -1,10 +1,12 @@
-use std::{sync::{atomic::{AtomicU64, Ordering}, Arc}, time::Duration};
+use std::{sync::{atomic::Ordering, Arc}, time::Duration};
 use bytes::{BufMut, BytesMut};
-use tokio::{io, select, signal, task::JoinHandle};
+use tokio::{io, select, signal, sync::Mutex, task::JoinHandle};
 use crate::{
     connection::SocketWriter, ds::{
         trie::Trie, GetFromQueue, InsertQueue 
-    }, helper::time::sys_now, message_broker::client::{storage::{EventType, WALL}, SAFETY_OFFTIME}, protocol::{
+    }, helper::time::sys_now, 
+    message_broker::client::storage::{EventType, WALL}, 
+    protocol::{
         mqtt::{ClientPacketV5, PING_RES}, 
         v5::{
             self,
@@ -26,8 +28,8 @@ pub type RouterTree = Arc<Trie<SubscriberInstance>>;
 
 pub struct BrokerMediator {
     clients: Clients,
+    tasks: Tasks,
     message_queue: Queue,
-    spawn_counter: Arc<AtomicU64>,
     router: RouterTree,
 }
 
@@ -36,8 +38,8 @@ impl BrokerMediator {
         let clients = Clients::new().await;
         let message_queue = Queue::new();
         let router = Arc::new(Trie::new());
-        let spawn_counter =  Arc::new(AtomicU64::default());
-        Self{ clients, message_queue, spawn_counter, router }
+        let tasks = Tasks::new();
+        Self{ clients, message_queue, tasks, router }
     }
 }
 
@@ -55,7 +57,11 @@ impl<'cp> BrokerMediator {
         let client = unsafe{self.clients.get_client(&clid)}.await.unwrap();
         let queue = self.message_queue.clone();
         let router = self.router.clone();
-        spawn_client(client, self.spawn_counter.clone(), queue, router);
+        self.tasks.spawn(
+            client, 
+            queue, 
+            router
+        ).await;
         Ok(result)
     }
 
@@ -69,9 +75,14 @@ impl<'cp> BrokerMediator {
         let ret = callback(unsafe {
             &mut (*client.load(Ordering::Acquire)).socket
         });
+        let client = unsafe{self.clients.get_client(&clid)}.await.unwrap();
         let queue = self.message_queue.clone();
         let router = self.router.clone();
-        spawn_client(client, self.spawn_counter.clone(), queue, router);
+        self.tasks.spawn(
+            client, 
+            queue, 
+            router
+        ).await;
         Ok(ret)
     }
 
@@ -87,6 +98,7 @@ impl<'cp> BrokerMediator {
         let clients = self.clients.clone();
         
         tokio::task::spawn(observer(
+            self.tasks.clone(),
             self.router.clone(),
             self.message_queue.clone(),
             clients.clone(),
@@ -94,6 +106,43 @@ impl<'cp> BrokerMediator {
     }
 }
 
+#[derive(Clone)]
+struct Tasks{
+    t: Arc<Mutex<Vec<JoinHandle<()>>>>
+}
+
+impl Tasks {
+    fn new() -> Self {
+        Self { t: Arc::new(Mutex::new(Vec::new())) }
+    }
+
+    async fn spawn<IQ, RO>(
+        &self,
+        client: AtomicClient, 
+        msg_queue: IQ, 
+        router: RO
+    ) where 
+        IQ: InsertQueue<Message> + Send + Sync + 'static,
+        RO: TopicRouter + Send + Sync + 'static
+    {
+        let mut t = self.t.lock().await;
+        t.push(tokio::spawn(spawn_client(
+            client, 
+            msg_queue, 
+            router
+        )));
+    }
+}
+
+impl Cleanup for Tasks {
+    async fn clear(self) {
+        self.t.lock().await.iter()
+        .for_each(|v| {
+            v.abort()    
+        });
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
 #[derive(Clone)]
 pub struct SubscriberInstance {
     pub clid: ClientID,
@@ -135,84 +184,84 @@ impl TopicRouter for Arc<Trie<SubscriberInstance>> {
     }
 }
 
-fn spawn_client<IQ, RO>(client: AtomicClient, spawn_counter: Arc<AtomicU64>, msg_queue: IQ, router: RO) 
-    where 
+
+async fn spawn_client<IQ, RO>(
+    client: AtomicClient, 
+    msg_queue: IQ, 
+    router: RO
+) where 
         IQ: InsertQueue<Message> + Send + Sync + 'static,
         RO: TopicRouter + Send + Sync + 'static
 {
-    tokio::spawn(async move {
-        spawn_counter.fetch_add(1, Ordering::AcqRel);
-        let mut buffer = BytesMut::zeroed(1024);
-        println!("[Client] {} spawned", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
-        'lis: loop {
-            let client = unsafe {&mut *client.load(std::sync::atomic::Ordering::Relaxed)};
+    let mut buffer = BytesMut::zeroed(1024);
+    println!("[Client] {} spawned", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
+    'lis: loop {
+        let client = unsafe {&mut *client.load(std::sync::atomic::Ordering::Relaxed)};
 
-            let t = sys_now();
-            if !client.is_alive(t) {
+        let t = sys_now();
+        if !client.is_alive(t) {
+            let log = client.storage.clone();
+
+            let sevent = WALL{
+                time: t+1, 
+                value: EventType::DisconnectByServer(client.expiration_time())
+            };
+
+            log.log_session(&[sevent])
+            .await
+            .unwrap();
+
+            println!("[Client] {} dead", client.clid);
+            break 'lis;
+        }
+
+        let dur = Duration::from_secs(client.ttl() - t);
+        
+        let readed = match client.socket.read_timeout(&mut buffer, dur).await {
+            Ok(readed) => readed,
+            Err(err) => {
+                if err.kind() == io::ErrorKind::TimedOut {
+                    continue 'lis;
+                }
+
                 let log = client.storage.clone();
-
                 let sevent = WALL{
                     time: t+1, 
-                    value: EventType::DisconnectByServer(client.expiration_time())
+                    value: EventType::ClientDisconnected(client.expiration_time())
                 };
 
                 log.log_session(&[sevent])
-                .await
-                .unwrap();
+                    .await
+                    .unwrap();
 
-                println!("[Client] {} dead", client.clid);
                 break 'lis;
             }
-
-            let dur = Duration::from_secs(SAFETY_OFFTIME);
-            
-            let readed = match client.socket.read_timeout(&mut buffer, dur).await {
-                Ok(readed) => readed,
-                Err(err) => {
-                    if err.kind() == io::ErrorKind::TimedOut {
-                        continue 'lis;
-                    }
-
-                    let log = client.storage.clone();
-                    let sevent = WALL{
-                        time: t+1, 
-                        value: EventType::ClientDisconnected(client.expiration_time())
-                    };
-
-                    log.log_session(&[sevent])
-                        .await
-                        .unwrap();
-
-                    break 'lis;
-                }
-            };
-            
-            if readed == 0 {
-                client.kill();
-                continue 'lis;
-            }
-
-            let mut packet_buf = buffer.split_to(readed);
-            let incoming_packet = ClientPacketV5::decode(&mut packet_buf);
-            let packet_received = incoming_packet.unwrap();
-            match client.keep_alive(t+1) {
-                Ok(_) => {},
-                Err(_) => continue
-            };
-
-            match packet_received {
-                ClientPacketV5::PingReq => { let _ = client.socket.write_all(&PING_RES).await; },
-                ClientPacketV5::Publish(pub_packet) => queue_message(&msg_queue, &client.clid, pub_packet),
-                ClientPacketV5::Subscribe(sub_packet) => subscribe_topics(&router, client, sub_packet).await
-            };
-            
-            buffer.reserve(readed);
-            buffer.put_bytes(0, readed);
+        };
+        
+        if readed == 0 {
+            client.kill();
+            continue 'lis;
         }
 
-        spawn_counter.fetch_sub(1, Ordering::AcqRel);
-        println!("[Client] {} despawn", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
-    });
+        let mut packet_buf = buffer.split_to(readed);
+        let incoming_packet = ClientPacketV5::decode(&mut packet_buf);
+        let packet_received = incoming_packet.unwrap();
+        match client.keep_alive(t+1) {
+            Ok(_) => {},
+            Err(_) => continue
+        };
+
+        match packet_received {
+            ClientPacketV5::PingReq => { let _ = client.socket.write_all(&PING_RES).await; },
+            ClientPacketV5::Publish(pub_packet) => queue_message(&msg_queue, &client.clid, pub_packet),
+            ClientPacketV5::Subscribe(sub_packet) => subscribe_topics(&router, client, sub_packet).await
+        };
+        
+        buffer.reserve(readed);
+        buffer.put_bytes(0, readed);
+    }
+
+    println!("[Client] {} despawn", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);
 }
 
 fn queue_message<IQ>(msg_queue: &IQ, clid: &ClientID, packet: PublishPacket)
@@ -258,11 +307,13 @@ where RO: TopicRouter
     save.unwrap();
 }
 
-async fn observer<RO, DM, F> (
+async fn observer<RO, DM, F, S> (
+    spawner: S,
     router: RO, 
     msg_queue: DM,
     forwarder: F,
 ) where 
+    S: Cleanup,
     RO: TopicRouter + Send + Sync + 'static,
     DM: GetFromQueue<Message> + Send + Sync + Cleanup + 'static,
     F: SendStrategy + Send + Sync + Clone + Cleanup + 'static,
@@ -271,6 +322,7 @@ async fn observer<RO, DM, F> (
     'observer: loop {
         select! {
             _ = signal::ctrl_c() => {
+                spawner.clear().await;
                 forwarder.clear().await;
                 msg_queue.clear().await;
                 break 'observer;
@@ -297,22 +349,6 @@ async fn observer<RO, DM, F> (
     println!("[observer] shutdown");
 }
 
-// async fn wait_message<DM, RO>(msg_queue: &DM, router: &RO) -> Result<(Message, Vec<SubscriberInstance>), String>
-// where 
-//     DM: GetFromQueue<Message>,
-//     RO: TopicRouter,
-// {
-//     if let Some(msg) = msg_queue.dequeue() {
-//         let to = router.route(&msg.packet.topic).await;
-//         let dst = match to {
-//             None => return Err(format!("no subscriber for topic {}", &msg.packet.topic)),
-//             Some(dst) => dst
-//         };
-//         return Ok((msg, dst));
-//     }
-//     time::sleep(Duration::from_millis(10)).await;
-//     Err(String::from("no message"))
-// }
 
 pub async fn publish<F>(forwarder: F, msg: Message, subs: Vec<SubscriberInstance>) 
 where 

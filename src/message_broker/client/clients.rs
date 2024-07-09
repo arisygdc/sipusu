@@ -1,8 +1,8 @@
-use std::{sync::{atomic::{AtomicPtr, Ordering}, Arc}, time::Duration};
+use std::sync::{atomic::{AtomicPtr, Ordering}, Arc};
 use tokio::{io, sync::RwLock};
 use crate::{connection::SocketWriter, helper::time::sys_now, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}};
 use crate::protocol::v5::puback::{PubACKType, PubackPacket};
-use super::{client::Client, clobj::ClientID, SessionController, SAFETY_OFFTIME};
+use super::{client::Client, clobj::ClientID, SessionController};
 
 pub type AtomicClient = Arc<AtomicPtr<Client>>;
 type MutexClients = RwLock<Vec<AtomicClient>>;
@@ -31,7 +31,7 @@ impl<'lc, 'st> Clients {
             let clid = unsafe {&(*clients[i].load(Ordering::Relaxed)).clid};
             match new_clid.cmp(clid) {
                 std::cmp::Ordering::Equal => {
-                    let is_available = unsafe {(*clients[i].load(Ordering::Relaxed)).is_alive(sys_now() + SAFETY_OFFTIME)};
+                    let is_available = unsafe {(*clients[i].load(Ordering::Relaxed)).is_alive(sys_now())};
                     if is_available {
                         return Err("duplicate client id".to_string())
                     }
@@ -201,21 +201,6 @@ impl Cleanup for Clients {
         if clients.is_empty() {
             return ;
         }
-
-        for client in clients.iter() {
-            unsafe{
-                if client.load(Ordering::Acquire).is_null() {
-                    continue;
-                }
-                
-                println!("killing {}", (*client.load(Ordering::Acquire)).clid);
-                (*client.load(Ordering::Acquire)).kill()
-            }
-        }
-
-        // for safety
-        // need track client spawn
-        tokio::time::sleep(Duration::from_secs(5)).await;
 
         for _ in 0..clients.len() {
             let opc = clients.pop();

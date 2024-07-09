@@ -4,7 +4,6 @@ pub mod storage;
 pub mod clobj;
 
 pub const DATA_STORE: &str = ".dbg_data/clients";
-pub const SAFETY_OFFTIME: u64 = 1;
 
 /// time base session control for `signaling`
 /// 

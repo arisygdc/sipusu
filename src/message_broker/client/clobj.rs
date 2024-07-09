@@ -156,6 +156,10 @@ impl SessionController for Session {
         self.expr_interval as u64 + self.ttl
     }
 
+    fn ttl(&self) -> u64 {
+        self.ttl
+    }
+
     fn kill(&mut self) {
         self.ttl = sys_now() -1 ;
     }

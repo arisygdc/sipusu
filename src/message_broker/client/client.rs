@@ -131,6 +131,10 @@ impl SessionController for Client {
         self.session.keep_alive(t)
     }
 
+    fn ttl(&self) -> u64 {
+        self.session.ttl
+    }
+
     fn kill(&mut self) {
         self.session.kill()
     }

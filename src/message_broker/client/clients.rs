@@ -1,6 +1,6 @@
 use std::sync::{atomic::{AtomicPtr, Ordering}, Arc};
 use tokio::{io, sync::RwLock};
-use crate::{connection::SocketWriter, helper::time::sys_now, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}};
+use crate::{connection::SocketWriter, helper::time::sys_now, message_broker::{cleanup::Cleanup, client::storage::{EventType, WALL}, Forwarder, SendStrategy}};
 use crate::protocol::v5::puback::{PubACKType, PubackPacket};
 use super::{client::Client, clobj::ClientID, SessionController};
 
@@ -183,8 +183,14 @@ impl Cleanup for Clients {
                 Some(cl) => cl,
                 None => continue
             };
-            println!("[Cleanup] {}", unsafe{&*_cl.load(Ordering::Relaxed)}.clid);
-            drop(unsafe {Box::from_raw(_cl.load(Ordering::Acquire))})
+            let _take_cl = unsafe {Box::from_raw(_cl.load(Ordering::Acquire))};
+            let expired_at = _take_cl.expiration_time();
+            let _res = 
+            _take_cl.storage.log_session(&[WALL{
+                    time: sys_now(), 
+                    value: EventType::DisconnectByServer(expired_at)}
+            ]).await;
+            println!("[Cleanup] {}", _take_cl.clid);
         }
     }
 }

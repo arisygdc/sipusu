@@ -7,6 +7,7 @@ pub mod client;
 pub mod mediator;
 pub mod cleanup;
 mod message;
+mod router;
 
 pub const MAX_QOS: u8 = 2;
 pub const WILDCARD_SUPPORT: bool = false;

@@ -10,9 +10,9 @@ use crate::{
         mqtt::{ClientPacketV5, PING_RES}, 
         v5::{
             self,
-            malform::Malformed, publish::PublishPacket, 
-            subsack::{SubAckResult, SubsAck}, 
-            subscribe::{Subscribe, SubscribePacket}, 
+            publish::PublishPacket, 
+            subsack::SubsAck, 
+            subscribe::SubscribePacket, 
             ServiceLevel
         }
     }
@@ -20,8 +20,13 @@ use crate::{
 use crate::connection::SocketReader;
 use super::{
     cleanup::Cleanup, client::{
-        client::{Client, UpdateClient}, clients::{AtomicClient, Clients}, clobj::{ClientID, ClientSocket}, SessionController
-    }, message::{Message, Queue}, SendStrategy
+        client::{Client, UpdateClient}, 
+        clients::{AtomicClient, Clients}, 
+        clobj::{ClientID, ClientSocket}, 
+        SessionController
+    }, message::{Message, Queue}, 
+    router::{SubscriberInstance, TopicRouter}, 
+    SendStrategy
 };
 
 pub type RouterTree = Arc<Trie<SubscriberInstance>>;
@@ -143,46 +148,6 @@ impl Cleanup for Tasks {
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
-#[derive(Clone)]
-pub struct SubscriberInstance {
-    pub clid: ClientID,
-    pub max_qos: ServiceLevel
-}
-
-impl PartialEq for SubscriberInstance {
-    fn eq(&self, other: &Self) -> bool {
-        self.clid.eq(&other.clid)
-    }
-
-    fn ne(&self, other: &Self) -> bool {
-        !self.eq(other)
-    }
-}
-
-pub trait TopicRouter {
-    fn subscribe(&self, clid: &ClientID, subs: &[Subscribe]) -> impl std::future::Future<Output = Result<Vec<SubAckResult>, Malformed>> + Send;
-    fn route(&self, topic: &str) -> impl std::future::Future<Output = Option<Vec<SubscriberInstance>>> + Send;
-}
-
-impl TopicRouter for Arc<Trie<SubscriberInstance>> {
-    async fn subscribe(&self, clid: &ClientID, subs: &[Subscribe]) -> Result<Vec<SubAckResult>, Malformed> {
-        let mut res = Vec::with_capacity(subs.len());
-        for sub in subs {
-            let instance = SubscriberInstance {
-                clid: clid.clone(),
-                max_qos: sub.max_qos.clone()
-            };
-
-            self.insert(&sub.topic, instance).await;
-            res.push(Ok(sub.max_qos.clone()));
-        }
-        Ok(res)
-    }
-
-    async fn route(&self, topic: &str) -> Option<Vec<SubscriberInstance>> {
-        self.get(topic).await
-    }
-}
 
 
 async fn spawn_client<IQ, RO>(
@@ -190,8 +155,8 @@ async fn spawn_client<IQ, RO>(
     msg_queue: IQ, 
     router: RO
 ) where 
-        IQ: InsertQueue<Message> + Send + Sync + 'static,
-        RO: TopicRouter + Send + Sync + 'static
+    IQ: InsertQueue<Message> + Send + Sync + 'static,
+    RO: TopicRouter + Send + Sync + 'static
 {
     let mut buffer = BytesMut::zeroed(1024);
     println!("[Client] {} spawned", unsafe{&mut (*client.load(std::sync::atomic::Ordering::Relaxed))}.clid);

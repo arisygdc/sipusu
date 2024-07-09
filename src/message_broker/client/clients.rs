@@ -62,22 +62,6 @@ impl<'lc, 'st> Clients {
         Ok(())
     }
 
-    // TODO: Create Garbage collector
-    #[deprecated]
-    pub async fn remove(&self, clid: &ClientID) -> Result<(), String> {
-        let mut clients = self.list.write().await;
-        let idx = clients.binary_search_by(|c| unsafe {
-                (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
-            })
-            .map_err(|_| format!("cannot find conn num {}", clid))?;
-        let rm_ptr = clients[idx].load(Ordering::Relaxed);
-        clients.remove(idx);
-
-        drop(clients);
-        unsafe { drop(Box::from_raw(rm_ptr)) }
-        Ok(())
-    }
-
     /// binary search by client id
     /// in action read guard from vector
     /// give you access to mutable reference on client
@@ -90,15 +74,6 @@ impl<'lc, 'st> Clients {
         
         let cl = unsafe {&mut (*clients[idx].load(Ordering::Relaxed))};
         Some(f(cl))
-    }
-
-    #[deprecated]
-    pub async fn session_exists(&self, clid: &ClientID) -> bool {
-        let clients = self.list.read().await;
-        clients.binary_search_by(|c| unsafe {
-            let t = &(*c.load(Ordering::Acquire)).clid;
-            t.cmp(clid)
-        }).is_ok()
     }
 
     pub async unsafe fn get_client(&self, clid: &ClientID) -> Option<AtomicClient> {

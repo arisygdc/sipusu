@@ -2,7 +2,7 @@ use bytes::BytesMut;
 
 use super::v5::{malform::Malformed, publish::PublishPacket, subscribe::SubscribePacket};
 
-pub const PING_RES: [u8; 1] = [0xD0];
+pub const PING_RES: [u8; 1] = [0x0D];
 
 
 pub enum ClientPacketV5 {

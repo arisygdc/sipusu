@@ -1,8 +1,17 @@
-use std::{io, net::SocketAddr, sync::atomic::AtomicU32};
+use std::{io, sync::atomic::AtomicU32};
 use super::{errors::ConnError, handshake::{MqttConnectRequest, MqttConnectedResponse}, line::SocketConnection, ConnectionID};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
-use crate::{message_broker::{client::client::{Client, ClientID, UpdateClient}, mediator::BrokerMediator}, protocol::v5::{connack::{ConnackPacket, Properties}, connect::ConnectPacket}, server::Wire};
+use crate::{
+    message_broker::{
+        client::{client::{Client, UpdateClient}, 
+        clobj::{ClientID, Limiter}}, 
+        mediator::BrokerMediator, MAX_QOS
+    }, protocol::v5::{
+        connack::{ConnackPacket, Properties}, 
+        connect::ConnectPacket
+    }, server::Wire
+};
 
 #[allow(dead_code)]
 pub struct Proxy {
@@ -16,11 +25,11 @@ impl Proxy {
         Ok(Self { access_total, broker })
     }
     
-    async fn establish_connection(&self, connid: ConnectionID, mut conn: SocketConnection, addr: SocketAddr) -> Result<(), ConnError> {
+    async fn establish_connection(&self, connid: ConnectionID, mut conn: SocketConnection) -> Result<(), ConnError> {
         let req_ack = conn.read_request().await?;
         let mut connack_packet = ConnackPacket::default();
 
-        let srv_var = collect(req_ack, addr, &mut connack_packet).unwrap();
+        let srv_var = collect(req_ack, &mut connack_packet).unwrap();
         self.start_session(
             connack_packet,
             connid,
@@ -39,52 +48,65 @@ impl Proxy {
         srv_var: ServerVariable
     ) -> Result<(), String> {
         let mut conn = conn;
-        let session_exists = self.broker.session_exists(&srv_var.clid).await;
-        if !srv_var.clean_start && session_exists {
-            // TODO: change client state from incoming request
-            // TODO: response ack
+        let session = self.broker.is_still_alive(&srv_var.clid).await;
+        if let Some(still_alive) = session {
+            if still_alive {
+                // TODO: send disconnect with response code
+                return Err("()".to_string());
+            }
+        }
+
+        if !srv_var.clean_start {
+            println!("try restoring connection");
             let mut bucket = UpdateClient {
                 conid: Some(connid.clone()),
-                addr: Some(srv_var.addr),
-                keep_alive: Some(srv_var.keep_alive),
-                protocol_level: Some(srv_var.protocol_level),
                 socket: Some(conn)
             };
 
-            let restore_feedback = self.broker.try_restore_connection(&srv_var.clid, &mut bucket, |c| {
+            let restore_feedback = 
+            self.broker.try_restore_session(srv_var.clid.clone(), &mut bucket, |s| {
                 response.session_present = true;
-                c.connack(&response)
+                s.connack(&response)
             }).await;
-
-            if let Ok(fb) = restore_feedback {
-                fb.await.unwrap();
-                return  Ok(());
+            
+            match restore_feedback {
+                Ok(fb) => {
+                    fb.await.unwrap();
+                    println!("client restored");
+                    return  Ok(());
+                }, Err(err) => println!("{}", err.to_string())
             }
             
+            
+            println!("failed to restore");
             conn = bucket.socket
                 .take()
                 .unwrap();
         }
-        
-        if session_exists {
-            self.broker.remove(&srv_var.clid).await.unwrap();
+
+        let mut limit = Limiter::default();
+        if let Some(ref v) = response.properties {
+            limit = Limiter::new(
+                v.receive_maximum, 
+                v.maximum_packet_size,
+                v.topic_alias_maximum
+            );
         }
 
         let client = Client::new(
             connid, 
             conn, 
-            srv_var.addr, 
-            srv_var.clid, 
+            srv_var.clid.clone(), 
             srv_var.keep_alive,
             srv_var.expr_interval,
             srv_var.protocol_level,
+            limit
         ).await;
 
-        self.broker.register(client, |c| {
-            c.connack(&response)
-        })
-        .await.unwrap()
-        .await.unwrap();
+        let cb = self.broker.register(client, |s| async {
+            s.connack(&response).await
+        }).await.unwrap();
+        cb.await.unwrap();
         Ok(())
     }
 
@@ -95,7 +117,7 @@ impl Proxy {
 }
 
 impl Wire for Proxy {
-    async fn connect_with_tls(&self, stream: TcpStream, addr: SocketAddr, tls: TlsAcceptor) {
+    async fn connect_with_tls(&self, stream: TcpStream, tls: TlsAcceptor) {
         let id = self.request_id();
         println!("[stream] process id {}", id);
         let stream = match tls.accept(stream).await {
@@ -109,29 +131,28 @@ impl Wire for Proxy {
         
         println!("[stream] secured");
         let stream = SocketConnection::Secure(stream);
-        let _ = self.establish_connection(id, stream, addr).await;
+        let _ = self.establish_connection(id, stream).await;
     }
 
-    async fn connect(&self, stream: TcpStream, addr: SocketAddr) {
+    async fn connect(&self, stream: TcpStream) {
         let id = self.request_id();
         println!("[stream] process id {}", id);
         let stream = stream;
         let stream = SocketConnection::Plain(stream);
-        let _ = self.establish_connection(id, stream, addr).await;
+        let _ = self.establish_connection(id, stream).await;
     }
 }
 
 struct ServerVariable {
     clid: ClientID,
     clean_start: bool,
-    addr: SocketAddr,
     keep_alive: u16,
     protocol_level: u8,
-    expr_interval: u32
+    expr_interval: u32,
 }
 
 // TODO: on notes
-fn collect(req: ConnectPacket, addr: SocketAddr, res: &mut ConnackPacket) -> Result<ServerVariable, String> {
+fn collect(req: ConnectPacket, res: &mut ConnackPacket) -> Result<ServerVariable, String> {
     let clean_start = req.clean_start();
 
     let is_generate_clid = req.client_id.len() == 0;
@@ -142,11 +163,10 @@ fn collect(req: ConnectPacket, addr: SocketAddr, res: &mut ConnackPacket) -> Res
     
     let mut srv_var = ServerVariable {
         clid: clid.clone(),
-        addr,
         clean_start,
         keep_alive: req.keep_alive,
         protocol_level: req.protocol_level,
-        expr_interval: 0
+        expr_interval: 0,
     };
 
     let req_prop = match req.properties {
@@ -163,8 +183,9 @@ fn collect(req: ConnectPacket, addr: SocketAddr, res: &mut ConnackPacket) -> Res
     if is_generate_clid {
         res_prop.assigned_client_identifier = Some(clid.to_string())
     }
+
     res_prop.receive_maximum = req_prop.receive_maximum;
-    // res_prop.maximum_qos
+    res_prop.maximum_qos = Some(MAX_QOS);
     // res_prop.retain_available
     res_prop.maximum_packet_size = req_prop.maximum_packet_size;
     res_prop.topic_alias_maximum = req_prop.topic_alias_maximum;

@@ -1,149 +1,324 @@
 use std::{collections::HashMap, ptr, sync::atomic::{AtomicPtr, Ordering}};
-use tokio::sync::RwLock;
 
-// TODO: wilcard
-pub struct Trie<T> 
-    where T: PartialEq + Clone
+type ATrieChild<T> = AtomicPtr<Child<T>>;
+
+struct Child<T>
+    where T: Clone + PartialEq
 {
-    root: AtmcNode<T>
+    child: HashMap<String, ATrieChild<T>>,
+    subscriber: AtomicPtr<T>
 }
 
-type AtmcNode<T> = AtomicPtr<TrieNode<T>>;
-struct TrieNode<T> 
-    where T: PartialEq + Clone
-{
-    child: HashMap<String, AtmcNode<T>>,
-    subscribers: RwLock<Vec<T>>
-}
-
-impl<T> TrieNode<T> 
-    where T: PartialEq + Clone
+impl<T> Child<T> 
+    where T: Clone + PartialEq
 {
     fn new() -> Self {
         Self {
             child: HashMap::new(), 
-            subscribers: RwLock::new(Vec::new()) 
+            subscriber: AtomicPtr::default()
         }
     }
 
-    async fn add_subscriber(&self, value: T) {
-        let mut add_sub = self.subscribers.write().await;
-        add_sub.push(value);
+    fn create_branch(&mut self, topic: String) {
+        let p = Box::into_raw(Box::new(Child::new()));
+        self.child.insert(
+            topic,
+            AtomicPtr::new(p)
+        );
     }
 
-    async fn get_subscriber(&self) -> Vec<T>{
-        let rsub = self.subscribers.read().await;
-        rsub.to_vec()
+    fn set_subscriber(&self, subscriber: T) -> bool {
+        let v_ptr = Box::into_raw(Box::new(subscriber));
+        let exw = self.subscriber.compare_exchange_weak(
+            ptr::null_mut(),
+            v_ptr, 
+            Ordering::AcqRel,
+            Ordering::Relaxed
+        );
+        exw.is_ok()
+    }
+
+    fn delete_subscriber(&self, subscriber: T) -> bool {
+        let cur_psub = self.subscriber.load(Ordering::Acquire);
+        if cur_psub.is_null() {
+            return false;
+        }
+
+        unsafe {
+            if (*cur_psub).ne(&subscriber) {
+                return false;
+            }
+
+            let old_psub = self.subscriber.swap(ptr::null_mut(), Ordering::Relaxed);
+            drop(Box::from_raw(old_psub))
+        };
+        true
+
+    }
+
+    fn get_subscriber(&self) -> Option<T> {
+        unsafe {
+            let sub = self.subscriber.load(Ordering::Acquire);
+            if sub.is_null() {
+                return None;
+            }
+
+            Some((*sub).clone())
+        }
     }
 }
 
+pub struct Trie<T> 
+    where T: Clone + PartialEq
+{
+    root: ATrieChild<T>
+}
+
 impl<T> Trie<T> 
-    where T: PartialEq + Clone
+    where T: Clone + PartialEq
 {
     pub fn new() -> Self {
-        Trie {
-            root: AtomicPtr::new(ptr::null_mut()),
-        }
+        let pchild = Box::into_raw(Box::new(Child::<T>::new()));
+        Self { root: AtomicPtr::new(pchild) }
     }
-
-    fn empty_atmcnode(cur: &AtomicPtr<TrieNode<T>>) -> Result<*mut TrieNode<T>, *mut TrieNode<T>> {
-        let new_node: *mut TrieNode<T> = Box::into_raw(Box::new(TrieNode::new()));
-        cur.compare_exchange(
-            ptr::null_mut(), 
-            new_node, 
-            Ordering::Release,
-            Ordering::Relaxed
-        )
-    }
-
-    fn with_traverse<R>(&self, topic: &str, f: impl FnOnce(&AtomicPtr<TrieNode<T>>) -> R) -> R {
+    
+    pub fn insert(&self, topic: &str, value: T) -> bool {
         let parts: Vec<&str> = topic.split('/').collect();
         let mut cur = &self.root;
         let mut i = 0;
         while i < parts.len() {
             let part = parts[i];
-            if cur.load(Ordering::Acquire).is_null() {
-                Self::empty_atmcnode(cur).unwrap();
+            
+            let next = cur.load(Ordering::Acquire);
+            if next.is_null() {
+                let p = Box::into_raw(Box::new(Child::<T>::new()));
+                cur.store(p, Ordering::Relaxed);
                 continue;
             }
 
-            let get_opt = unsafe {
-                (*cur.load(Ordering::Acquire)).child.get(part)
-            };
+            let branch_map = unsafe {&mut (*next).child};
 
-            cur = match get_opt {
+            cur = match branch_map.get(part) {
+                Some(branch) => branch,
                 None => unsafe {
-                    let new_null = AtomicPtr::new(ptr::null_mut());
-                    (*cur.load(Ordering::Acquire)).child.insert(
-                        part.to_owned(),
-                        new_null
-                    );
+                    (*next).create_branch(part.to_string());
                     continue;
-                }, Some(branch) => branch
+                }
             };
             
             i = i+1;
         }
 
-        f(cur)
-    } 
-
-    pub async fn insert(&self, topic: &str, value: T) {
-        self.with_traverse(topic, |p| unsafe {
-            if p.load(Ordering::Acquire).is_null() {
-                Self::empty_atmcnode(&p).unwrap();
-            }
-    
-            (*p.load(Ordering::Acquire)).add_subscriber(value) 
-        }).await;
+        unsafe {(*cur.load(Ordering::Acquire)).set_subscriber(value)}
     }
 
-    pub async fn get(&self, topic: &str) -> Option<Vec<T>> {
-        let m = self.with_traverse(topic, |p| unsafe {
-            if p.load(Ordering::Acquire).is_null() {
+    fn get<R>(&self, topic: &str, f: impl FnOnce(&Child<T>) -> R) -> Option<R> {
+        let parts: Vec<&str> = topic.split('/').collect();
+        let mut cur = &self.root;
+
+        for part in parts.into_iter() {
+            let branch_ptr = cur.load(Ordering::Acquire);
+            if branch_ptr.is_null() {
                 return None;
             }
 
-            Some((*p.load(Ordering::Acquire)).get_subscriber())
-        })?.await;
+            let get_opt = unsafe {(*branch_ptr).child.get(part)};
 
-        if m.len() == 0 {
-            return None;
+            cur = match get_opt {
+                Some(branch) => branch,
+                None => return None
+            };
         }
+        
+        let child = unsafe {&*cur.load(Ordering::Acquire)};
+        Some(f(child))
+    }
 
-        Some(m)
+    pub fn get_val(&self, topic: &str) -> Option<T> {
+        self.get(topic, |child| {
+            child.get_subscriber()
+        })?
+    }
+
+    #[allow(dead_code)]
+    pub fn remove(&self, topic: &str, value: T) -> Option<bool> {
+        self.get(topic, |child| {
+            child.delete_subscriber(value)
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn clean_branch(&self) {
+        unsafe {
+            Self::dfs_empty_and_remove(self.root.load(Ordering::SeqCst));
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Trie;
-
-    #[tokio::test]
-    async fn insert() {
-        let pref_tree: Trie<u32> = Trie::new();
-        struct TrieTest {
-            topic: String,
-            value: u32
+impl<T> Trie<T> 
+    where T: Clone + PartialEq
+{
+    #[allow(dead_code)]
+    unsafe fn dfs_empty_and_remove(node_ptr: *mut Child<T>) -> bool {
+        if node_ptr.is_null() {
+            return true;
         }
 
-        let test_table = vec![
-            TrieTest{ topic: String::from("topic/topek/tokek"), value: 66},
-            TrieTest{ topic: String::from("topic/topek/tokek"), value: 67},
-            TrieTest{ topic: String::from("topic/topek/toket"), value: 98},
-            TrieTest{ topic: String::from("topek/tokek/topic"), value: 78},
-            TrieTest{ topic: String::from("tokek/topic/topek"), value: 99}
-        ];
+        let node = &mut *node_ptr;
+        let mut empty_keys = Vec::new();
 
-        for test in test_table {
-            pref_tree.insert(&test.topic, test.value).await;
-            let get = pref_tree.get(&test.topic).await;
-            if let Some(v) = get {
-                println!("{:?}", v);
-                assert!(v.contains(&test.value))
-            } else {
-                panic!()
+        for (key, child_ptr) in node.child.iter() {
+            if Self::dfs_empty_and_remove(child_ptr.load(Ordering::SeqCst)) {
+                empty_keys.push(key.clone());
             }
         }
+
+        empty_keys.iter().for_each(|elm| {
+            node.child.remove(elm);
+        });
+
+        node.child.is_empty() && node.subscriber.load(Ordering::Acquire).is_null()
+    }
+
+    unsafe fn dfs_drop(node_ptr: *mut Child<T>) {
+        if node_ptr.is_null() {
+            return;
+        }
+
+        let node = &mut *node_ptr;
+        let mut empty_keys = Vec::new();
+
+        for (key, child_ptr) in node.child.iter() {
+            Self::dfs_drop(child_ptr.load(Ordering::SeqCst));
+            empty_keys.push(key.clone());
+            
+        }
+
+        if let Some(sub) = node.get_subscriber() {
+            node.delete_subscriber(sub);
+        }
+        
+        empty_keys.iter().for_each(|elm| {
+            println!("{}", elm);
+            node.child.remove(elm);
+        });
+    }
+}
+
+impl<T> Drop for Trie<T> 
+where T: Clone + PartialEq
+{
+    fn drop(&mut self) {
+        unsafe {
+            let inner = self.root.load(Ordering::SeqCst);
+            if inner.is_null() {
+                return;
+            }
+
+            Self::dfs_drop(inner);
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::{ds::trie::Trie, message_broker::client::clobj::ClientID, protocol::v5::{subscribe::Subscribe, ServiceLevel}};
+
+    struct TrieTest {
+        clid: ClientID,
+        value: Vec<Subscribe>
+    }
+
+    #[test]
+    fn subscriber() {
+        let pref_tree: Trie<ClientID> = Trie::new();
+
+        let test_cases = vec![
+            TrieTest {
+                clid: ClientID::new("clid1".to_string()),
+                value: vec![Subscribe {
+                    topic: "home/bathroom/lamp".to_string(),
+                    max_qos: ServiceLevel::QoS1,
+                }, Subscribe {
+                    topic: "home/kitchen".to_string(),
+                    max_qos: ServiceLevel::QoS2,
+                }],
+            },
+            TrieTest {
+                clid: ClientID::new("clid2".to_string()),
+                value: vec![Subscribe {
+                    topic: "home/kitchen/topek".to_string(),
+                    max_qos: ServiceLevel::QoS2,
+                }, Subscribe {
+                    topic: "home/livingroom/fan".to_string(),
+                    max_qos: ServiceLevel::QoS2,
+                }],
+            },
+        ];
+        
+        for test in test_cases.iter() {
+            for sub in test.value.iter() {
+                let ins = pref_tree.insert(&sub.topic, test.clid.clone());
+                assert!(ins)
+            }
+
+            for sub in test.value.iter() {
+                let got = pref_tree.get_val(&sub.topic).unwrap();
+                assert_eq!(got, test.clid)
+            }
+        }
+
+        for test in test_cases {
+            for sub in test.value.iter() {
+                let del = pref_tree.remove(&sub.topic, test.clid.clone()).unwrap();
+                assert!(del)
+            }
+
+            for sub in test.value.iter() {
+                let got = pref_tree.get_val(&sub.topic);
+                assert!(got.is_none())
+            }
+        }
+    }
+
+    #[test]
+    fn cleanup() {
+        let pref_tree: Trie<ClientID> = Trie::new();
+
+        let test_cases = vec![
+            TrieTest {
+                clid: ClientID::new("clid1".to_string()),
+                value: vec![Subscribe {
+                    topic: "home/bathroom/lamp".to_string(),
+                    max_qos: ServiceLevel::QoS1,
+                }, Subscribe {
+                    topic: "home/kitchen".to_string(),
+                    max_qos: ServiceLevel::QoS2,
+                }],
+            },
+            TrieTest {
+                clid: ClientID::new("clid2".to_string()),
+                value: vec![Subscribe {
+                    topic: "home/kitchen/topek".to_string(),
+                    max_qos: ServiceLevel::QoS2,
+                }, Subscribe {
+                    topic: "home/livingroom/fan".to_string(),
+                    max_qos: ServiceLevel::QoS2,
+                }],
+            },
+        ];
+
+        for test in test_cases.iter() {
+            for sub in test.value.iter() {
+                let ins = pref_tree.insert(&sub.topic, test.clid.clone());
+                assert!(ins)
+            }
+        }
+
+        let target = &test_cases[1];
+        pref_tree.remove(&target.value[1].topic, target.clid.clone());
+        let got = pref_tree.get_val(&target.value[1].topic);
+        assert!(got.is_none());
     }
 }

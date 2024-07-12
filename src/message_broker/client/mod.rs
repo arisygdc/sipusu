@@ -1,6 +1,7 @@
 pub mod client;
 pub mod clients;
 pub mod storage;
+pub mod clobj;
 
 pub const DATA_STORE: &str = ".dbg_data/clients";
 
@@ -18,4 +19,6 @@ pub trait SessionController {
     /// generate error when old duration less than `t`
     fn keep_alive(&mut self, t: u64) -> Result<u64, String>;
     fn is_expired(&self, t: u64) -> bool;
+    fn expiration_time(&self) -> u64;
+    fn ttl(&self) -> u64;
 }

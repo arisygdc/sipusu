@@ -1,9 +1,8 @@
-use std::{sync::{atomic::{fence, AtomicPtr, Ordering}, Arc}, time::Duration};
+use std::sync::{atomic::{AtomicPtr, Ordering}, Arc};
 use tokio::{io, sync::RwLock};
-use crate::{
-    connection::SocketWriter, message_broker::{cleanup::Cleanup, Forwarder, SendStrategy}, protocol::v5::puback::{PubACKType, PubackPacket}
-};
-use super::{client::{Client, ClientID}, SessionController};
+use crate::{connection::SocketWriter, helper::time::sys_now, message_broker::{cleanup::Cleanup, client::storage::{EventType, WALL}, Forwarder, SendStrategy}};
+use crate::protocol::v5::puback::{PubACKType, PubackPacket};
+use super::{client::Client, clobj::ClientID, SessionController};
 
 pub type AtomicClient = Arc<AtomicPtr<Client>>;
 type MutexClients = RwLock<Vec<AtomicClient>>;
@@ -22,26 +21,26 @@ impl<'lc, 'st> Clients {
     /// insert sort by conn number
     pub async fn insert(&self, new_cl: Client) -> Result<(), String> {
         let new_clid = new_cl.clid.clone();
+        let new_cl = Box::new(new_cl);
+        
         let mut clients = self.list.write().await;
-
         let mut found = clients.len();
+        let mut swap = false;
         let mut i = 0;
         'insert: while i < clients.len() {
-            fence(Ordering::Acquire);
-
-            let clid = unsafe {
-                let load = clients[i].load(Ordering::Acquire);
-                if load.is_null() {
-                    clients.remove(i);
-                    continue 'insert;
-                }
-                &(*load).clid
-            };
-
-            i += 1;
+            let clid = unsafe {&(*clients[i].load(Ordering::Relaxed)).clid};
             match new_clid.cmp(clid) {
-                std::cmp::Ordering::Equal => return Err("duplicate client id".to_string()),
-                std::cmp::Ordering::Greater => continue 'insert,
+                std::cmp::Ordering::Equal => {
+                    let is_available = unsafe {(*clients[i].load(Ordering::Relaxed)).is_alive(sys_now())};
+                    if is_available {
+                        return Err("duplicate client id".to_string())
+                    }
+                    swap = true;
+                },
+                std::cmp::Ordering::Greater => {
+                    i += 1;
+                    continue 'insert
+                },
                 std::cmp::Ordering::Less => ()
             }
             
@@ -49,28 +48,17 @@ impl<'lc, 'st> Clients {
             break 'insert;
         }
 
-        let new_cl = Box::new(new_cl);
         let p = Box::into_raw(new_cl);
-        let new_cl = AtomicPtr::new(p);
-        let new_cl = Arc::new(new_cl);
-        clients.insert(found, new_cl);
+        if swap {
+            let odl_cl = clients[i].swap(p, Ordering::AcqRel);
+            drop(clients);
+            unsafe{drop(Box::from_raw(odl_cl))}
+        } else {
+            let new_cl = AtomicPtr::new(p);
+            let new_cl = Arc::new(new_cl);
+            clients.insert(found, new_cl);
+        }
 
-        Ok(())
-    }
-
-    // TODO: Create Garbage collector
-    #[allow(dead_code)]
-    pub async fn remove(&self, clid: &ClientID) -> Result<(), String> {
-        let mut clients = self.list.write().await;
-        let idx = clients.binary_search_by(|c| unsafe {
-                (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
-            })
-            .map_err(|_| format!("cannot find conn num {}", clid))?;
-        let rm_ptr = clients[idx].load(Ordering::Relaxed);
-        clients.remove(idx);
-
-        drop(clients);
-        unsafe { drop(Box::from_raw(rm_ptr)) }
         Ok(())
     }
 
@@ -86,14 +74,6 @@ impl<'lc, 'st> Clients {
         
         let cl = unsafe {&mut (*clients[idx].load(Ordering::Relaxed))};
         Some(f(cl))
-    }
-
-    pub async fn session_exists(&self, clid: &ClientID) -> bool {
-        let clients = self.list.read().await;
-        clients.binary_search_by(|c| unsafe {
-            let t = &(*c.load(Ordering::Acquire)).clid;
-            t.cmp(clid)
-        }).is_ok()
     }
 
     pub async unsafe fn get_client(&self, clid: &ClientID) -> Option<AtomicClient> {
@@ -152,6 +132,7 @@ impl SendStrategy for Clients
 
         // Wait Pub Rel
         // ...
+        println!("TODO: wait pubrel");
 
         // Publish Message
         self.pubish(&subscriber, &msg_buffer).await?;
@@ -167,7 +148,7 @@ impl SendStrategy for Clients
 impl Forwarder for Clients {
     async fn pubish(&self, con_id: &ClientID, packet: &[u8]) -> io::Result<()> {
         let found = self.search_mut_client(&con_id, |client| {
-            client.write_all(packet)
+            client.socket.write_all(packet)
         }).await;
     
         let res = match found {
@@ -196,29 +177,20 @@ impl Cleanup for Clients {
             return ;
         }
 
-        for client in clients.iter() {
-            unsafe{
-                if client.load(Ordering::Acquire).is_null() {
-                    continue;
-                }
-                
-                println!("killing {}", (*client.load(Ordering::Acquire)).clid);
-                (*client.load(Ordering::Acquire)).kill()
-            }
-        }
-
-        // for safety
-        // need track client spawn
-        tokio::time::sleep(Duration::from_secs(5)).await;
-
         for _ in 0..clients.len() {
             let opc = clients.pop();
             let _cl = match opc {
                 Some(cl) => cl,
                 None => continue
             };
-            println!("[Cleanup] {}", unsafe{&*_cl.load(Ordering::Relaxed)}.clid);
-            drop(unsafe {Box::from_raw(_cl.load(Ordering::Acquire))})
+            let _take_cl = unsafe {Box::from_raw(_cl.load(Ordering::Acquire))};
+            let expired_at = _take_cl.expiration_time();
+            let _res = 
+            _take_cl.storage.log_session(&[WALL{
+                    time: sys_now(), 
+                    value: EventType::DisconnectByServer(expired_at)}
+            ]).await;
+            println!("[Cleanup] {}", _take_cl.clid);
         }
     }
 }

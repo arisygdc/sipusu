@@ -20,7 +20,7 @@ pub struct Properties {
     pub receive_maximum: Option<u16>,
     pub maximum_qos: Option<u8>,
     pub retain_available: Option<u8>,
-    pub maximum_packet_size: Option<u32>,
+    pub maximum_packet_size: Option<u16>,
     pub assigned_client_identifier: Option<String>,
     pub topic_alias_maximum: Option<u16>,
     pub reason_string: Option<String>,
@@ -107,7 +107,7 @@ impl ConnackPacket {
             }
             if let Some(maximum_packet_size) = properties.maximum_packet_size {
                 buf_prop.put_u8(0x27);
-                buf_prop.put_u32(maximum_packet_size);
+                buf_prop.put_u16(maximum_packet_size);
             }
             if let Some(assigned_client_identifier) = &properties.assigned_client_identifier {
                 buf_prop.put_u8(0x12);
@@ -219,7 +219,7 @@ fn decode_properties(buffer: &mut BytesMut) -> Result<Option<Properties>, String
             0x21 => properties.receive_maximum = Some(buffer.get_u16()),
             0x24 => properties.maximum_qos = Some(buffer.get_u8()),
             0x25 => properties.retain_available = Some(buffer.get_u8()),
-            0x27 =>  properties.maximum_packet_size = Some(buffer.get_u32()),
+            0x27 =>  properties.maximum_packet_size = Some(buffer.get_u16()),
             0x12 => {
                 let value = decode_utf8_string(buffer)?;
                 properties.assigned_client_identifier = Some(value);

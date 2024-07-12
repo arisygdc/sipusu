@@ -19,12 +19,12 @@ impl PartialEq for SubscriberInstance {
 }
 
 pub trait TopicRouter {
-    fn subscribe(&self, clid: &ClientID, subs: &[Subscribe]) -> impl std::future::Future<Output = Result<Vec<SubAckResult>, Malformed>> + Send;
-    fn route(&self, topic: &str) -> impl std::future::Future<Output = Option<Vec<SubscriberInstance>>> + Send;
+    fn subscribe(&self, clid: &ClientID, subs: &[Subscribe]) -> Result<Vec<SubAckResult>, Malformed>;
+    fn route(&self, topic: &str) -> Option<SubscriberInstance>;
 }
 
 impl TopicRouter for Arc<Trie<SubscriberInstance>> {
-    async fn subscribe(&self, clid: &ClientID, subs: &[Subscribe]) -> Result<Vec<SubAckResult>, Malformed> {
+    fn subscribe(&self, clid: &ClientID, subs: &[Subscribe]) -> Result<Vec<SubAckResult>, Malformed> {
         let mut res = Vec::with_capacity(subs.len());
         for sub in subs {
             let instance = SubscriberInstance {
@@ -32,13 +32,14 @@ impl TopicRouter for Arc<Trie<SubscriberInstance>> {
                 max_qos: sub.max_qos.clone()
             };
 
-            self.insert(&sub.topic, instance).await;
+            self.insert(&sub.topic, instance);
             res.push(Ok(sub.max_qos.clone()));
         }
+
         Ok(res)
     }
-
-    async fn route(&self, topic: &str) -> Option<Vec<SubscriberInstance>> {
-        self.get(topic).await
+    
+    fn route(&self, topic: &str) -> Option<SubscriberInstance> {
+        self.get_val(topic)
     }
 }

@@ -1,4 +1,4 @@
-use std::io;
+use std::{future::Future, io};
 
 use client::clobj::ClientID;
 
@@ -16,24 +16,24 @@ pub const SHARED_SUBS_SUPPORT: bool = false;
 
 pub trait SendStrategy: Forwarder + Send + Sync
 {
-    async fn qos0(&self, subscriber: &ClientID, buffer: &[u8]);
-    async fn qos1(
+    fn qos0(&self, subscriber: &ClientID, buffer: &[u8]) -> impl Future<Output = ()> + Send;
+    fn qos1(
         &self, 
         publisher: &ClientID, 
         subscriber: &ClientID, 
         packet_id: u16, 
         buffer: &[u8]
-    ) -> std::io::Result<()>;
+    ) -> impl Future<Output = io::Result<()>> + Send;
 
-    async fn qos2(
+    fn qos2(
         &self, 
         publisher: &ClientID, 
         subscriber: &ClientID, 
         packet_id: u16, 
         buffer: &[u8]
-    ) -> std::io::Result<()>;
+    ) -> impl Future<Output = io::Result<()>> + Send;
 }
 
 pub trait Forwarder {
-    fn pubish(&self, clid: &ClientID, packet: &[u8]) -> impl std::future::Future<Output = io::Result<()>> + Send;
+    fn pubish(&self, clid: &ClientID, packet: &[u8]) -> impl Future<Output = io::Result<()>> + Send;
 }

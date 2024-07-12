@@ -141,7 +141,7 @@ impl Cleanup for Tasks {
     async fn clear(self) {
         self.t.lock().await.iter()
         .for_each(|v| {
-            v.abort()    
+            v.abort() 
         });
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -245,7 +245,7 @@ where IQ: InsertQueue<Message>
 async fn subscribe_topics<RO>(router: &RO, client: &mut Client, sub_packet: SubscribePacket) 
 where RO: TopicRouter
 {
-    let res = router.subscribe(&client.clid, &sub_packet.list).await;
+    let res = router.subscribe(&client.clid, &sub_packet.list);
     
     let recode = match res {
         Ok(res) => res,
@@ -296,7 +296,7 @@ async fn observer<RO, DM, F, S> (
                     Err(_) => continue 'observer
                 };
                 println!("{:?}", msg.packet);
-                let subs = match router.route(&msg.packet.topic).await {
+                let subs = match router.route(&msg.packet.topic) {
                     None => {
                         println!("no subscriber");
                         continue 'observer
@@ -304,47 +304,51 @@ async fn observer<RO, DM, F, S> (
                     Some(s) => s
                 };
                 
-                // let (msg, subs) = msg;
-                publish(forwarder.clone(), msg, subs).await
+                let fwd = forwarder.clone();
+                let order = Publish{
+                    msg, subs
+                };
+
+                tokio::spawn(order.forward(fwd));
             }
         }
     }
     println!("[observer] shutdown");
 }
 
+struct Publish {
+    msg: Message, 
+    subs: SubscriberInstance
+}
 
-pub async fn publish<F>(forwarder: F, msg: Message, subs: Vec<SubscriberInstance>) 
-where 
-    F: SendStrategy + Send + Sync + Clone + 'static,
-{
-    let publisher_id = msg.publisher;
-    let packet = msg.packet;
+impl Publish {
+    async fn forward<F>(self, forwarder: F)
+    where 
+        F: SendStrategy + Send + Sync + Clone + 'static,
+    {
+        let publisher_id = self.msg.publisher;
+        let packet = self.msg.packet;
+        let subs = self.subs;
 
-    if let v5::ServiceLevel::QoS0 = &packet.qos {
-        for ins in subs {
-            let buffer = packet.encode().unwrap();
-            forwarder.qos0(&ins.clid, &buffer).await;
-        }
-        return ;
-    }
-
-    let publisher_id = publisher_id.unwrap();
-    let packet_id = packet.packet_id.unwrap();
-    let buffer = packet.encode().unwrap();
-    
-    // Downgrade qos by max qos
-    for ins in subs {
-        let qos = packet.qos.code().min(ins.max_qos.code());
+        // Downgrade qos by max qos
+        let qos = packet.qos.code().min(subs.max_qos.code());
         let qos = ServiceLevel::try_from(qos)
             .unwrap_or_default();
 
+        if let v5::ServiceLevel::QoS0 = &qos {
+            let buffer = packet.encode().unwrap();
+            forwarder.qos0(&subs.clid, &buffer).await;
+            return ;
+        }
+
+        let publisher_id = publisher_id.unwrap();
+        let packet_id = packet.packet_id.unwrap();
+        let buffer = packet.encode().unwrap();
+
         let _res = match qos {
-            ServiceLevel::QoS0 => { 
-                forwarder.qos0(&ins.clid, &buffer).await;
-                continue;
-            }, 
-            ServiceLevel::QoS1 => forwarder.qos1(&publisher_id, &ins.clid, packet_id, &buffer).await,
-            ServiceLevel::QoS2 => forwarder.qos2(&publisher_id, &ins.clid, packet_id, &buffer).await,
+            ServiceLevel::QoS1 => forwarder.qos1(&publisher_id, &subs.clid, packet_id, &buffer).await,
+            ServiceLevel::QoS2 => forwarder.qos2(&publisher_id, &subs.clid, packet_id, &buffer).await,
+            _ => {return ;}
         };
-    };
+    }
 }

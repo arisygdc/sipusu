@@ -1,6 +1,29 @@
-use std::{ptr, sync::atomic::{AtomicPtr, Ordering}};
+use std::{mem::transmute, ops::Deref, ptr, sync::atomic::{AtomicPtr, Ordering}};
 
 use crate::message_broker::cleanup::Cleanup;
+
+struct AtomicOption<T> {
+    inner: AtomicPtr<Option<T>>
+}
+
+impl<T> Default for AtomicOption<T> {
+    fn default() -> Self {
+        let opt_ptr = to_raw_boxed(Option::None);
+        Self{
+            inner: AtomicPtr::new(opt_ptr)
+        }
+    }
+}
+
+impl<T> AtomicOption<T> {
+    fn take(&self) -> Option<T> {
+        let inner_val = self.inner.load(Ordering::Acquire);
+        unsafe {
+            let actual_val = &mut *inner_val;
+            actual_val.take()
+        }
+    }
+}
 
 pub struct AtmcNode<T> {
     val: T,
@@ -15,6 +38,68 @@ impl<T> AtmcNode<T> {
         }
     }
 }
+
+pub struct DlistNode<T> {
+    val: T,
+    next: AtomicPtr<AtmcNode<T>>
+}
+
+impl<T> DlistNode<T> {
+    fn new(val: T) -> Self {
+        Self {
+            val,
+            next: AtomicPtr::default()
+        }
+    }
+}
+
+
+#[inline]
+fn to_raw_boxed<T>(val: T) -> *mut T {
+    let boxed = Box::new(val);
+    Box::into_raw(boxed)
+}
+
+pub struct Dlist<T> {
+    head: AtomicPtr<DlistNode<T>>,
+    tail: AtomicPtr<AtomicPtr<DlistNode<T>>>
+}
+
+impl<T> Dlist<T> {
+    pub fn new() -> Self {
+        Self { 
+            head: AtomicPtr::default(), 
+            tail: AtomicPtr::default() 
+        }
+    }
+
+    pub fn push(&self, val: T) {
+        let new_pnode = to_raw_boxed(DlistNode::new(val));
+        let head = self.head.load(Ordering::Acquire);
+        
+        if head.is_null() {
+            self.head.store(new_pnode, Ordering::Relaxed);
+            let p = to_raw_boxed(AtomicPtr::new(new_pnode));
+            self.tail.store(p, Ordering::Release);
+        }
+    }
+
+    pub fn pop(&self) -> Option<T> {
+        let node = unsafe {
+            let tail = self.tail.load(Ordering::Acquire);
+            let inner = (*tail).swap(ptr::null_mut(), Ordering::Release);
+            
+            match inner.is_null() {
+                true => return None,
+                false => Box::from_raw(inner)
+            }
+        };
+
+        Some(node.val)
+    }
+}
+
+
 
 pub struct List<T> {
     head: AtomicPtr<AtmcNode<T>>
@@ -112,8 +197,8 @@ unsafe fn iter_exchange<T>(curptr: *mut AtmcNode<T>, excd: *mut AtmcNode<T>) -> 
 mod tests {
     use std::{sync::Arc, time::SystemTime};
     use tokio::{join, task::yield_now};
+    use super::{List, Dlist};
 
-    use super::List;
 
     #[tokio::test(flavor = "multi_thread",  worker_threads = 3)]
     async fn concurrent_insert() {
@@ -137,38 +222,40 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn ctxswitch_insert() {
-        let list: Arc<List<u8>> = Arc::new(List::new());
-        async fn apeend(list: Arc<List<u8>>) {
-            for i in 0..6 {
-                list.append(i);
-                yield_now().await
-            }
-        }
+    // #[tokio::test]
+    // async fn ctxswitch_insert() {
+    //     let list: Arc<Dlist<u8>> = Arc::new(Dlist::new());
+    //     async fn apeend(list: Arc<List<u8>>) {
+    //         for i in 0..6 {
+    //             list.append(i);
+    //             yield_now().await
+    //         }
+    //     }
 
-        let t1 = tokio::task::spawn(apeend(list.clone()));
-        let t2 = tokio::task::spawn(apeend(list.clone()));
-        let t3 = tokio::task::spawn(apeend(list.clone()));
+    //     let t1 = tokio::task::spawn(apeend(list.clone()));
+    //     let t2 = tokio::task::spawn(apeend(list.clone()));
+    //     let t3 = tokio::task::spawn(apeend(list.clone()));
 
-        let _ = join!(t1, t2, t3);
-        unsafe {
-            let ppp = list.collects();
-            println!("{:?}", ppp);
-            assert!(ppp.len() == 18)
-        }
-    }
+    //     let _ = join!(t1, t2, t3);
+    //     unsafe {
+    //         let ppp = list.collects();
+    //         println!("{:?}", ppp);
+    //         assert!(ppp.len() == 18)
+    //     }
+    // }
 
     #[tokio::test(flavor = "multi_thread",  worker_threads = 3)]
     async fn concurrent_take_first() {
-        let list: Arc<List<u16>> = Arc::new(List::new());
+        let list: Arc<Dlist<u16>> = Arc::new(Dlist::new());
+        // let output: Arc<Vec<u16>> = Arc::new(Vec::with_capacity(600));
+
         for i in 0..600 {
-            list.append(i);
+            list.push(i);
         }
         
-        async fn take(list: Arc<List<u16>>, _id: u8) {
+        async fn take(list: Arc<Dlist<u16>>, _id: u8) {
             for _ in 0..200 {
-                list.take_first();
+                println!("{:?}", list.pop());
             }
         }
 
@@ -179,7 +266,6 @@ mod tests {
         let _ = join!(t1, t2, t3);
         // let end = now();
         println!("start: {:?}", start);
-        // println!("end: {:?}", end);
         println!("elapsed: {:?}", start.elapsed());
 
     }

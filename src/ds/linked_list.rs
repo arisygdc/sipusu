@@ -1,27 +1,84 @@
-use std::{mem::transmute, ops::Deref, ptr, sync::atomic::{AtomicPtr, Ordering}};
+use std::{ptr, sync::atomic::{fence, AtomicPtr, Ordering}};
 
 use crate::message_broker::cleanup::Cleanup;
 
-struct AtomicOption<T> {
-    inner: AtomicPtr<Option<T>>
-}
+    struct AtomicOption<T> {
+        inner: AtomicPtr<Option<T>>,
+    }
 
 impl<T> Default for AtomicOption<T> {
     fn default() -> Self {
         let opt_ptr = to_raw_boxed(Option::None);
-        Self{
-            inner: AtomicPtr::new(opt_ptr)
-        }
+        Self::new(opt_ptr)
     }
 }
 
 impl<T> AtomicOption<T> {
+    #[inline]
+    fn new(p: *mut Option<T>) -> Self {
+        Self{
+            inner: AtomicPtr::new(p)
+        }
+    }
+
     fn take(&self) -> Option<T> {
-        let inner_val = self.inner.load(Ordering::Acquire);
+        let inner_val: *mut Option<T> = self.inner.load(Ordering::Acquire);
         unsafe {
-            let actual_val = &mut *inner_val;
+            let actual_val: &mut Option<T> = &mut *inner_val;
             actual_val.take()
         }
+    }
+
+    #[inline]
+    fn compare_exchange(
+        &self,
+        current: *mut Option<T>,
+        new: *mut Option<T>,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<*mut Option<T>, *mut Option<T>> {
+        self.inner.compare_exchange(current, new, success, failure)
+    }
+
+    /// fail when option is Some(T)
+    /// success will return true
+    fn store(&self, val: T) -> bool {
+        let vptr = to_raw_boxed(Some(val));
+        let inner_val = self.inner.load(Ordering::Acquire);
+        let inner = unsafe { &mut *inner_val };
+        if let Some(_) = inner {
+            return false;
+        }
+
+        self.valrpl_ptr(vptr);
+        true
+    }
+
+    /// swap and free old ptr
+    fn valrpl_and_freeptr(&self, p: *mut Option<T>) {
+        let old_ptr = self.inner.swap(p, Ordering::Release);
+        unsafe{ drop(Box::from_raw(old_ptr)) };
+    }
+
+    /// spap with new ptr
+    #[inline]
+    fn valrpl_ptr(&self, p: *mut Option<T>) -> *mut Option<T> {
+        self.inner.swap(p, Ordering::Release)
+    }
+
+    #[inline]
+    fn get_val_ptr(&self) -> *mut Option<T> {
+        self.inner.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn load(&self, order: Ordering) -> *mut Option<T> {
+        self.inner.load(order)
+    }
+
+    fn peek(&self) -> &Option<T> {
+        let inner_val = self.inner.load(Ordering::Acquire);
+        unsafe { &*inner_val }
     }
 }
 
@@ -41,18 +98,19 @@ impl<T> AtmcNode<T> {
 
 pub struct DlistNode<T> {
     val: T,
-    next: AtomicPtr<AtmcNode<T>>
+    next: AtomicOption<DlistNode<T>>,
+    prev: AtomicOption<DlistNode<T>>,
 }
 
 impl<T> DlistNode<T> {
     fn new(val: T) -> Self {
         Self {
             val,
-            next: AtomicPtr::default()
+            next: AtomicOption::default(),
+            prev: AtomicOption::default()
         }
     }
 }
-
 
 #[inline]
 fn to_raw_boxed<T>(val: T) -> *mut T {
@@ -61,41 +119,71 @@ fn to_raw_boxed<T>(val: T) -> *mut T {
 }
 
 pub struct Dlist<T> {
-    head: AtomicPtr<DlistNode<T>>,
-    tail: AtomicPtr<AtomicPtr<DlistNode<T>>>
+    head: AtomicOption<DlistNode<T>>,
+    tail: AtomicOption<DlistNode<T>>
 }
 
 impl<T> Dlist<T> {
     pub fn new() -> Self {
         Self { 
-            head: AtomicPtr::default(), 
-            tail: AtomicPtr::default() 
+            head: AtomicOption::default(),
+            tail: AtomicOption::default()
         }
     }
 
     pub fn push(&self, val: T) {
-        let new_pnode = to_raw_boxed(DlistNode::new(val));
-        let head = self.head.load(Ordering::Acquire);
+        let new_node = DlistNode::new(val);
+        let head = &self.head;
+
+        if head.peek().is_none() {
+            self.head.store(new_node);
+            let p = self.head.get_val_ptr();
+            self.tail.valrpl_and_freeptr(p);
+            return;
+        }
+
+        let head_ptr = self.head.get_val_ptr();
+        new_node.next.valrpl_and_freeptr(head_ptr);
+        let new_node_ptr = to_raw_boxed(Some(new_node));
+        self.head.valrpl_ptr(new_node_ptr);
+        let head = unsafe { &*head_ptr };
         
-        if head.is_null() {
-            self.head.store(new_pnode, Ordering::Relaxed);
-            let p = to_raw_boxed(AtomicPtr::new(new_pnode));
-            self.tail.store(p, Ordering::Release);
+        if let Some(vhead) = head {
+            vhead.prev.valrpl_ptr(new_node_ptr);
+        } else {
+            panic!()
         }
     }
 
     pub fn pop(&self) -> Option<T> {
-        let node = unsafe {
-            let tail = self.tail.load(Ordering::Acquire);
-            let inner = (*tail).swap(ptr::null_mut(), Ordering::Release);
-            
-            match inner.is_null() {
-                true => return None,
-                false => Box::from_raw(inner)
-            }
+        let tail_opt_ptr = self.tail.get_val_ptr();
+        let tail_opt = unsafe { &*tail_opt_ptr };
+        let tail = match tail_opt {
+            None => return None,
+            Some(v) => v
         };
+        
+        let res = self.tail.compare_exchange(
+            tail_opt_ptr, 
+            tail.prev.get_val_ptr(), 
+            Ordering::Release,
+            Ordering::Relaxed
+        );
 
-        Some(node.val)
+        match res {
+            Err(_) => None,
+            Ok(garbage) => unsafe {
+                let inner = *Box::from_raw(garbage);
+                Some(inner?.val)
+            }
+        }
+    }
+}
+
+impl<T> Drop for Dlist<T> {
+    fn drop(&mut self) {
+        while 
+            let Some(_) = self.pop(){}
     }
 }
 
@@ -244,8 +332,24 @@ mod tests {
     //     }
     // }
 
+    #[test]
+    fn single_test() {
+        let list: Dlist<u16> = Dlist::new();
+
+        for i in 1..4 {
+            for j in 1..i*2 {
+                list.push(j);
+                println!("insert: {}", j);
+            }
+            
+            while let Some(v) = list.pop() {
+                println!("pop: {}", v);
+            }    
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread",  worker_threads = 3)]
-    async fn concurrent_take_first() {
+    async fn concurrent_pop() {
         let list: Arc<Dlist<u16>> = Arc::new(Dlist::new());
         // let output: Arc<Vec<u16>> = Arc::new(Vec::with_capacity(600));
 
@@ -254,9 +358,11 @@ mod tests {
         }
         
         async fn take(list: Arc<Dlist<u16>>, _id: u8) {
+            // println!("task id {} start", _id);
             for _ in 0..200 {
-                println!("{:?}", list.pop());
+                println!("worker: {}, {:?}", _id, list.pop());
             }
+            // println!("task id {} finish", _id);
         }
 
         let t1 = tokio::task::spawn(take(list.clone(), 1));

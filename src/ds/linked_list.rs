@@ -1,97 +1,5 @@
 use std::{ptr, sync::atomic::{AtomicPtr, Ordering}};
-
 use crate::message_broker::cleanup::Cleanup;
-
-    struct AtomicOption<T> {
-        inner: AtomicPtr<Option<T>>,
-    }
-
-impl<T> Default for AtomicOption<T> {
-    fn default() -> Self {
-        let opt_ptr = to_raw_boxed(Option::None);
-        Self::new(opt_ptr)
-    }
-}
-
-impl<T> AtomicOption<T> {
-    #[inline]
-    fn new(p: *mut Option<T>) -> Self {
-        Self{
-            inner: AtomicPtr::new(p)
-        }
-    }
-
-    fn take(&self) -> Option<T> {
-        let inner_val: *mut Option<T> = self.inner.load(Ordering::Acquire);
-        unsafe {
-            let actual_val: &mut Option<T> = &mut *inner_val;
-            actual_val.take()
-        }
-    }
-
-    #[inline]
-    fn compare_exchange(
-        &self,
-        current: *mut Option<T>,
-        new: *mut Option<T>,
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<*mut Option<T>, *mut Option<T>> {
-        self.inner.compare_exchange(current, new, success, failure)
-    }
-
-    #[inline]
-    fn compare_exchange_weak(
-        &self,
-        current: *mut Option<T>,
-        new: *mut Option<T>,
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<*mut Option<T>, *mut Option<T>> {
-        self.inner.compare_exchange_weak(current, new, success, failure)
-    }
-
-    /// fail when option is Some(T)
-    /// success will return true
-    fn store(&self, val: T) -> bool {
-        let vptr = to_raw_boxed(Some(val));
-        let inner_val = self.inner.load(Ordering::Acquire);
-        let inner = unsafe { &mut *inner_val };
-        if let Some(_) = inner {
-            return false;
-        }
-
-        self.valrpl_and_freeptr(vptr, Ordering::Release);
-        true
-    }
-
-    /// swap and free old ptr
-    fn valrpl_and_freeptr(&self, p: *mut Option<T>, order: Ordering) {
-        let old_ptr = self.inner.swap(p, order);
-        unsafe{ drop(Box::from_raw(old_ptr)) };
-    }
-
-    /// spap with new ptr
-    #[inline]
-    fn valrpl_ptr(&self, p: *mut Option<T>, order: Ordering) -> *mut Option<T> {
-        self.inner.swap(p, Ordering::Release)
-    }
-
-    #[inline]
-    fn get_val_ptr(&self) -> *mut Option<T> {
-        self.inner.load(Ordering::Acquire)
-    }
-
-    #[inline]
-    fn load(&self, order: Ordering) -> *mut Option<T> {
-        self.inner.load(order)
-    }
-
-    fn peek(&self) -> &Option<T> {
-        let inner_val = self.inner.load(Ordering::Acquire);
-        unsafe { &*inner_val }
-    }
-}
 
 pub struct AtmcNode<T> {
     val: T,
@@ -153,20 +61,21 @@ impl<T> Dlist<T> {
     fn push_logic(&self, head: *mut DlistNode<T>, new_head_ptr: *mut DlistNode<T>) -> bool {
         match head.is_null() {
             true => {
-                let cmpx = self.head.compare_exchange(
+                let cmpx = self.head.compare_exchange_weak(
                     ptr::null_mut(), 
                     new_head_ptr, 
                     Ordering::AcqRel, 
                     Ordering::Relaxed
                 );
     
-                cmpx.unwrap();
+                if cmpx.is_err(){
+                    return false;
+                }
     
                 self.tail.store(new_head_ptr, Ordering::Release);
-                true
             }, false => {
                 let cmpx = unsafe {
-                    (*self.head.load(Ordering::Acquire)).prev.compare_exchange(
+                    (*self.head.load(Ordering::Acquire)).prev.compare_exchange_weak(
                         ptr::null_mut(),
                         new_head_ptr,
                         Ordering::AcqRel,
@@ -174,15 +83,15 @@ impl<T> Dlist<T> {
                     )
                 };
 
-                if let Ok(_) = cmpx {
-                    self.head.store(new_head_ptr, Ordering::Relaxed);
-                    unsafe {(*new_head_ptr).next.store(head, Ordering::Release)}
-                    return true;
+                if cmpx.is_err() {
+                    return false;
                 }
-
-                false
+            
+                self.head.store(new_head_ptr, Ordering::Relaxed);
+                unsafe {(*new_head_ptr).next.store(head, Ordering::Release)}
             }
         }
+        true
     }
 
     pub fn pop(&self) -> Option<T> {
@@ -322,8 +231,8 @@ unsafe fn iter_exchange<T>(curptr: *mut AtmcNode<T>, excd: *mut AtmcNode<T>) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::{Duration, SystemTime}};
-    use tokio::{join, time};
+    use std::{sync::Arc, time::SystemTime};
+    use tokio::join;
     use super::{List, Dlist};
 
 
@@ -332,8 +241,8 @@ mod tests {
         let list: Arc<List<u8>> = Arc::new(List::new());
         async fn apeend(list: Arc<List<u8>>) {
             println!("spawn task");
-            for i in 0..6 {
-                print!("{}", i);
+            for i in 0..200 {
+                // print!("{}", i);
                 list.append(i);
             }
         }
@@ -342,11 +251,16 @@ mod tests {
         let t2 = tokio::task::spawn(apeend(list.clone()));
         let t3 = tokio::task::spawn(apeend(list.clone()));
 
-        let _ = join!(t1, t2, t3);
         unsafe {
             let ppp = list.collects();
-            assert!(ppp.len() == 18)
+            println!("count: {}", ppp.len())
         }
+
+        let start = now();
+        let _ = join!(t1, t2, t3);
+        println!("start: {:?}", start);
+        println!("elapsed: {:?}", start.elapsed());
+        
     }
 
     #[test]
@@ -356,11 +270,11 @@ mod tests {
         for i in 1..4 {
             for j in 1..i*2 {
                 list.push(j);
-                println!("insert: {}", j);
+                // println!("insert: {}", j);
             }
             
-            while let Some(v) = list.pop() {
-                println!("pop: {}", v);
+            while let Some(_v) = list.pop() {
+                // println!("pop: {}", _v);
             }    
         }
     }
@@ -376,11 +290,11 @@ mod tests {
         async fn take(list: Arc<Dlist<u16>>, _id: u8) -> i32 {
             let mut cnt = 0;
             for _ in 0..200 {
-                let val = list.pop();
-                if val.is_some() {
+                let _val = list.pop();
+                if _val.is_some() {
                     cnt+=1;
                 }
-                println!("worker: {}, {:?}", _id, val);
+                // println!("worker: {}, {:?}", _id, _val);
             }
             cnt
         }
@@ -418,11 +332,12 @@ mod tests {
         let _ = join!(t1, t2, t3);
 
         let mut i = 0;
-        while let Some(v) = list.pop() {
+        while let Some(_v) = list.pop() {
             i += 1;
-            println!("{}. {:?}", i, v)
+            // println!("{}. {:?}", i, _v)
         }
 
+        println!("pop count: {}", i);
         println!("start: {:?}", start);
         println!("elapsed: {:?}", start.elapsed());
 

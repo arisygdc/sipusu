@@ -137,9 +137,13 @@ mod tests {
                 // println!("insert: {}", j);
             }
             
+            let mut cnt = 0;
             while let Some(_v) = list.pop() {
+                cnt += 1;
                 // println!("pop: {}", _v);
-            }    
+            }
+
+            assert_eq!((i*2-1), cnt)
         }
     }
 
@@ -170,28 +174,34 @@ mod tests {
         let (r1, r2, r3) = join!(t1, t2, t3);
         println!("start: {:?}", start);
         println!("elapsed: {:?}", start.elapsed());
-        println!("r1: {}, r2: {}, r3: {}", r1.unwrap(), r2.unwrap(), r3.unwrap());
-
+        
         println!("residu");
         while let Some(v) = list.pop() {
             println!("{:?}", v);
         }
-
+        
+        let (r1, r2, r3) = (r1.unwrap(), r2.unwrap(), r3.unwrap());
+        println!("r1: {}, r2: {}, r3: {}", r1, r2, r3);
+        assert!((r1 + r2 + r3) == 600);
     }
 
     #[tokio::test(flavor = "multi_thread",  worker_threads = 3)]
     async fn concurrent_push() {
         let list: Arc<Dlist<u16>> = Arc::new(Dlist::new());
         
-        async fn insert(list: Arc<Dlist<u16>>, start: u16) {
-            for i in 0..200 {
-                list.push(start*i);
+        let worker = 3;
+        let target_iteration = 600;
+        let iteration_per_worker = target_iteration / worker;
+
+        async fn insert(list: Arc<Dlist<u16>>, n: u16, mul: u16) {
+            for i in 0..n {
+                list.push(mul*i);
             }
         }
 
-        let t1 = tokio::task::spawn(insert(list.clone(), 1));
-        let t2 = tokio::task::spawn(insert(list.clone(), 2));
-        let t3 = tokio::task::spawn(insert(list.clone(), 3));
+        let t1 = tokio::task::spawn(insert(list.clone(), iteration_per_worker, 1));
+        let t2 = tokio::task::spawn(insert(list.clone(), iteration_per_worker, 2));
+        let t3 = tokio::task::spawn(insert(list.clone(), iteration_per_worker, 3));
         let start = now();
         let _ = join!(t1, t2, t3);
 
@@ -205,6 +215,7 @@ mod tests {
         println!("start: {:?}", start);
         println!("elapsed: {:?}", start.elapsed());
 
+        assert!(i == target_iteration)
     }
 
     fn now() -> SystemTime {

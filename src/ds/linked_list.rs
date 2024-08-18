@@ -1,19 +1,4 @@
 use std::{ptr, sync::atomic::{AtomicPtr, Ordering}};
-use crate::message_broker::cleanup::Cleanup;
-
-pub struct AtmcNode<T> {
-    val: T,
-    next: AtomicPtr<AtmcNode<T>>
-}
-
-impl<T> AtmcNode<T> {
-    fn new(val: T) -> Self {
-        Self {
-            val,
-            next: AtomicPtr::new(ptr::null_mut()),
-        }
-    }
-}
 
 pub struct DlistNode<T> {
     val: T,
@@ -55,10 +40,10 @@ impl<T> Dlist<T> {
         let new_head_ptr = to_raw_boxed(new_node);
 
         let head = self.head.load(Ordering::Acquire);
-        while !self.push_logic(head, new_head_ptr) {}
+        while !self.push_exchange(head, new_head_ptr) {}
     }
 
-    fn push_logic(&self, head: *mut DlistNode<T>, new_head_ptr: *mut DlistNode<T>) -> bool {
+    fn push_exchange(&self, head: *mut DlistNode<T>, new_head_ptr: *mut DlistNode<T>) -> bool {
         match head.is_null() {
             true => {
                 let cmpx = self.head.compare_exchange_weak(
@@ -136,132 +121,11 @@ impl<T> Drop for Dlist<T> {
 }
 
 
-
-pub struct List<T> {
-    head: AtomicPtr<AtmcNode<T>>
-}
-
-impl<T> List<T> {
-    pub fn new() -> Self {
-        let head =  AtomicPtr::new(ptr::null_mut());
-        List { head }
-    }
-
-    /// insert on last element
-    pub fn append(&self, val: T) {
-        let new_node = Box::into_raw(Box::new(AtmcNode::new(val)));
-        
-        loop {
-            let head = self.head.load(Ordering::Acquire);
-
-            if head.is_null() {
-                let compex = self
-                    .head
-                    .compare_exchange(ptr::null_mut(), new_node, Ordering::SeqCst, Ordering::SeqCst);
-                
-                match compex {
-                    Err(_) => continue,
-                    Ok(_) => return
-                }
-            }
-            
-            if unsafe { iter_exchange(self.head.load(Ordering::SeqCst), new_node) } {
-                return;
-            }
-        }
-    }
-
-    #[cfg(test)]
-    unsafe fn collects(&self) -> Vec<T> {
-        use std::mem;
-        let mut collect = vec![];
-        let mut curr = self.head.load(Ordering::SeqCst);
-        while !curr.is_null() {
-            let cv = mem::transmute_copy::<T, T>(&(*curr).val);
-            collect.push(cv);
-            curr = (*curr).next.load(Ordering::SeqCst);
-        }
-        collect
-    }
-}
-
-impl<T> List<T> {
-    pub fn take_first(&self) -> Option<T> {
-        let head = self.head.load(Ordering::Acquire);
-        if head.is_null() {
-            return None;
-        }
-        
-        unsafe {
-            let next = (*head).next.load(Ordering::Acquire);
-            self.head.compare_exchange(
-                head, 
-                next, 
-                Ordering::Release, 
-                Ordering::Relaxed
-            ).ok()?
-        };
-        let cast = unsafe{Box::from_raw(head)};
-        Some(cast.val)
-    }
-}
-
-// TODO: cleanup linked list
-impl<T> Cleanup for List<T> {
-    async fn clear(self) {
-        println!("TODO: clear linked list");
-    }
-}
-
-unsafe fn iter_exchange<T>(curptr: *mut AtmcNode<T>, excd: *mut AtmcNode<T>) -> bool {
-    let mut curr = curptr;
-    while !(*curr).next.load(Ordering::Acquire).is_null() {
-        curr = (*curr).next.load(Ordering::Acquire);
-    }
-
-    let cmpx = (*curr).next.compare_exchange(
-        ptr::null_mut(), 
-        excd, 
-        Ordering::Release, 
-        Ordering::Relaxed
-    );
-
-    cmpx.is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use std::{sync::Arc, time::SystemTime};
     use tokio::join;
-    use super::{List, Dlist};
-
-
-    #[tokio::test(flavor = "multi_thread",  worker_threads = 3)]
-    async fn concurrent_insert() {
-        let list: Arc<List<u8>> = Arc::new(List::new());
-        async fn apeend(list: Arc<List<u8>>) {
-            println!("spawn task");
-            for i in 0..200 {
-                // print!("{}", i);
-                list.append(i);
-            }
-        }
-    
-        let t1 = tokio::task::spawn(apeend(list.clone()));
-        let t2 = tokio::task::spawn(apeend(list.clone()));
-        let t3 = tokio::task::spawn(apeend(list.clone()));
-
-        unsafe {
-            let ppp = list.collects();
-            println!("count: {}", ppp.len())
-        }
-
-        let start = now();
-        let _ = join!(t1, t2, t3);
-        println!("start: {:?}", start);
-        println!("elapsed: {:?}", start.elapsed());
-        
-    }
+    use super::Dlist;
 
     #[test]
     fn single_test() {

@@ -36,7 +36,7 @@ impl SubscribePacket {
         // Payload
         let mut subscriptions = Vec::new();
 
-        while buffer.len() != 0 {
+        while !buffer.is_empty() {
             let topic_filter_len = buffer.get_u16() as usize;
             let topic_filter_bytes = buffer.split_to(topic_filter_len);
 

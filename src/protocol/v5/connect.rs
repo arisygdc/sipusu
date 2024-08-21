@@ -151,7 +151,7 @@ fn  decode_properties(buffer: &mut BytesMut) -> Result<Properties, String> {
         authentication_data: None,
     };
 
-    while bufprop.len() != 0 {
+    while !bufprop.is_empty() {
         let identifier = bufprop.get_u8();
         match identifier {
             0x11 => properties.session_expiry_interval = Some(bufprop.get_u32()),

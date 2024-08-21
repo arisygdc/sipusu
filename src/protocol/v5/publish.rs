@@ -51,7 +51,7 @@ impl Properties {
         };
     
         let mut buf_prop = buffer.split_to(properties_length);
-        while buf_prop.len() != 0 {
+        while !buf_prop.is_empty() {
             let identifier = buf_prop.get_u8();
     
             match identifier {
@@ -119,7 +119,7 @@ impl Properties {
 
         if let Some(content_type) = &self.content_type {
             props_buffer.put_u8(0x03);
-            encode_utf8_string(&mut props_buffer, &content_type)?;
+            encode_utf8_string(&mut props_buffer, content_type)?;
         }
 
         if let Some(user_properties) = &self.user_properties {

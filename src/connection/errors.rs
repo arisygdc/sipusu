@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+
+use std::fmt::Display;
 pub enum ConnError {
     Kind(ErrorKind),
     Custom(WithMessage)
@@ -20,12 +22,13 @@ impl ConnError {
     }
 }
 
-impl ToString for ConnError {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for ConnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let w = match self {
             ConnError::Custom(c) => c.msg.clone(),
             ConnError::Kind(k) => k.to_string()
-        }
+        };
+        write!(f, "{}", w)
     }
 }
 
@@ -37,15 +40,15 @@ pub enum ErrorKind {
     ConnectionAborted
 }
 
-impl ToString for ErrorKind {
-    fn to_string(&self) -> String {
+impl Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let bstr = match self {
             Self::BrokenPipe => "broken pipe",
             Self::ConnectionAborted => "connection aborted",
             Self::InvalidData => "invalid data",
             Self::TimedOut => "timeout"
         };
-        String::from(bstr)
+        write!(f, "{}", bstr)
     }
 }
 

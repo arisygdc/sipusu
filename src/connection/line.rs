@@ -24,14 +24,14 @@ impl SocketReader for SocketConnection {
 impl SocketWriter for SocketConnection {
     async fn write_all(&mut self, buffer: &[u8]) -> tokio::io::Result<()> {
         match self {
-            Self::Plain(p) => p.write_all(&buffer).await,
-            Self::Secure(s) => s.write_all(&buffer).await
+            Self::Plain(p) => p.write_all(buffer).await,
+            Self::Secure(s) => s.write_all(buffer).await
         }
     }
 }
 
 impl MqttConnectRequest for SocketConnection {
-    async fn read_request<'a>(&'a mut self) -> Result<ConnectPacket, ConnError> {
+    async fn read_request(&mut self) -> Result<ConnectPacket, ConnError> {
         let mut buffer = {
             let mut buffer = BytesMut::zeroed(256);
             let dur = Duration::from_secs(3);
@@ -40,7 +40,7 @@ impl MqttConnectRequest for SocketConnection {
         };
 
         let packet = ConnectPacket::decode(&mut buffer)
-            .map_err(|e| ConnError::new(ErrorKind::InvalidData, Some(String::from(e)))
+            .map_err(|e| ConnError::new(ErrorKind::InvalidData, Some(e))
         )?;
         Ok(packet)
     }

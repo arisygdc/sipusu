@@ -3,10 +3,11 @@ use bytes::{BufMut, BytesMut};
 use tokio::{io, select, signal, sync::Mutex, task::JoinHandle};
 use crate::{
     connection::SocketWriter, ds::{
-        trie::Trie, GetFromQueue, InsertQueue 
+        GetFromQueue, InsertQueue 
     }, helper::time::sys_now, 
-    message_broker::client::storage::{EventType, WALL}, 
-    protocol::{
+    message_broker::client::storage::{EventType, WALL}
+};
+use crate::protocol::{
         mqtt::{ClientPacketV5, PING_RES}, 
         v5::{
             self,
@@ -15,21 +16,15 @@ use crate::{
             subscribe::SubscribePacket, 
             ServiceLevel
         }
-    }
-};
+    };
 use crate::connection::SocketReader;
 use super::{
     cleanup::Cleanup, client::{
-        client::{Client, UpdateClient}, 
-        clients::{AtomicClient, Clients}, 
-        clobj::{ClientID, ClientSocket}, 
-        SessionController
+        clients::{AtomicClient, Clients}, clobj::{ClientID, ClientSocket}, Client, SessionController, UpdateClient
     }, message::{Message, Queue}, 
-    router::{SubscriberInstance, TopicRouter}, 
+    router::{topicrouter::{RouterTree, TopicRouter}, SubscriberInstance}, 
     SendStrategy
 };
-
-pub type RouterTree = Arc<Trie<SubscriberInstance>>;
 
 pub struct BrokerMediator {
     clients: Clients,
@@ -42,7 +37,7 @@ impl BrokerMediator {
     pub async fn new() -> Self {
         let clients = Clients::new().await;
         let message_queue = Queue::new();
-        let router = Arc::new(Trie::new());
+        let router = RouterTree::new();
         let tasks = Tasks::new();
         Self{ clients, message_queue, tasks, router }
     }
@@ -230,10 +225,11 @@ async fn spawn_client<IQ, RO>(
 fn queue_message<IQ>(msg_queue: &IQ, clid: &ClientID, packet: PublishPacket)
 where IQ: InsertQueue<Message>
 {
-    let mut msg = Message {
-        packet: packet,
+    let message = Message {
+        packet,
         publisher: None
     };
+    let mut msg = message;
 
     if msg.packet.qos.code() > 0 {
         msg.publisher = Some(clid.clone());

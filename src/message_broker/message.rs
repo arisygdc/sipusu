@@ -2,7 +2,7 @@ use std::{future::Future, io, marker::PhantomPinned, pin::Pin, ptr, sync::{atomi
 
 use pin_project_lite::pin_project;
 
-use crate::{ds::{linked_list::List, GetFromQueue, InsertQueue}, protocol::v5::publish::PublishPacket};
+use crate::{ds::{linked_list::Dlist, GetFromQueue, InsertQueue}, protocol::v5::publish::PublishPacket};
 use super::{cleanup::Cleanup, client::clobj::ClientID};
 
 #[derive(Default)]
@@ -29,7 +29,7 @@ impl Clone for Queue {
 
 impl Cleanup for  Queue {
     async fn clear(self) {
-        while let Some(msg) = self.inner.q.take_first() {
+        while let Some(msg) = self.inner.q.pop() {
             println!("Drop message");
             drop(msg)
         }
@@ -38,7 +38,7 @@ impl Cleanup for  Queue {
 
 impl InsertQueue<Message> for Queue {
     fn enqueue(&self, val: Message) {
-        self.inner.q.append(val);
+        self.inner.q.push(val);
         let waker = self.inner.s.swap(ptr::null_mut(), Ordering::Acquire);
         if !waker.is_null() {
             unsafe {
@@ -57,7 +57,7 @@ impl GetFromQueue<Message> for Queue {
 
 
 impl MQueue {
-    fn get<'a>(&'a self) -> DequeueMessage {
+    fn get(&self) -> DequeueMessage {
         DequeueMessage {
             queue: self,
             _marker: PhantomPinned
@@ -66,13 +66,13 @@ impl MQueue {
 }
 
 pub struct MQueue {
-    q: List<Message>,
+    q: Dlist<Message>,
     s: AtomicPtr<Waker>,
 }
 
 impl MQueue {
     pub(super) fn new() -> Self {
-        Self { q: List::new(), s: AtomicPtr::new(ptr::null_mut()) }
+        Self { q: Dlist::new(), s: AtomicPtr::new(ptr::null_mut()) }
     }
 }
 
@@ -88,7 +88,7 @@ impl Future for DequeueMessage<'_> {
     type Output = io::Result<Message>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let me = self.project();
-        if let Some(msg) = me.queue.q.take_first() {
+        if let Some(msg) = me.queue.q.pop() {
             return Poll::Ready(Ok(msg));
         }
 

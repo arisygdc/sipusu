@@ -168,7 +168,7 @@ impl ClientStore {
         for sub in topics.iter() {
             match map.get_mut(&sub.topic) {
                 Some(v) => {
-                    let not_equal = sub.max_qos.ne(&v);
+                    let not_equal = sub.max_qos.ne(v);
                     if not_equal {
                         *v = sub.max_qos.clone();
                     }
@@ -353,7 +353,7 @@ impl MetaData {
         new.user_properties = {
             let uprop_buf = buffer.split_to(uprop_len as usize);
             let mut prop = Vec::new();
-            while uprop_buf.len() != 0 {
+            while !uprop_buf.is_empty() {
                 prop.push((
                     deserialize_string(buffer),
                     deserialize_string(buffer)
@@ -387,7 +387,8 @@ impl Will {
 
     fn deserialize(buffer: &mut Bytes) -> Self {
         let mut new = Self::default();
-        new.topic = deserialize_string(buffer);
+        let deserialize_string = deserialize_string(buffer);
+        new.topic = deserialize_string;
         new.payload = buffer.to_vec();
         new
     }
@@ -422,6 +423,7 @@ pub enum EventType {
 }
 
 #[derive(Debug)]
+#[allow(clippy::upper_case_acronyms)]
 pub struct WALL {
     pub time: u64,
     pub value: EventType,
@@ -483,7 +485,7 @@ async fn read_wall(reader: &mut BufReader<File>, buffer: &mut BytesMut) -> io::R
 
         let mut read = buffer.split_to(n);
         let mut i = 0;
-        while read.len() > 0 {
+        while !read.is_empty() {
             let is_separator = read[i] == 0x0A;
             i += 1;
             if !is_separator {

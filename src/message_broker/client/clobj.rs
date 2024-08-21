@@ -230,7 +230,7 @@ impl SocketReader for Socket<SecuredStream, TcpStream> {
 }
 
 impl MqttConnectedResponse for Socket<SecuredStream, TcpStream> {
-    async fn connack<'a>(&'a mut self, ack: &'a ConnackPacket) -> io::Result<()> {
+    async fn connack(&mut self, ack: &ConnackPacket) -> io::Result<()> {
         let packet = ack.encode().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         
         self.write_all(&packet).await

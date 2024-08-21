@@ -4,7 +4,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 use crate::{
     message_broker::{
-        client::{client::{Client, UpdateClient}, 
+        client::{Client, UpdateClient, 
         clobj::{ClientID, Limiter}}, 
         mediator::BrokerMediator, MAX_QOS
     }, protocol::v5::{
@@ -74,7 +74,7 @@ impl Proxy {
                     fb.await.unwrap();
                     println!("client restored");
                     return  Ok(());
-                }, Err(err) => println!("{}", err.to_string())
+                }, Err(err) => println!("{}", err)
             }
             
             
@@ -124,7 +124,7 @@ impl Wire for Proxy {
             Ok(v) => v,
             // TODO: Specify the error and response error message
             Err(err) => {
-                eprintln!("[tls] conn {}, error: {}", id, err.to_string());
+                eprintln!("[tls] conn {}, error: {}", id, err);
                 return ;
             }
         };
@@ -155,7 +155,7 @@ struct ServerVariable {
 fn collect(req: ConnectPacket, res: &mut ConnackPacket) -> Result<ServerVariable, String> {
     let clean_start = req.clean_start();
 
-    let is_generate_clid = req.client_id.len() == 0;
+    let is_generate_clid = req.client_id.is_empty();
     let clid = match is_generate_clid {
         true => ClientID::new("raw_clid".to_string()),
         false => ClientID::new(req.client_id)
@@ -179,7 +179,10 @@ fn collect(req: ConnectPacket, res: &mut ConnackPacket) -> Result<ServerVariable
         .unwrap_or_default();
 
     let mut res_prop = Properties::default();
-    res_prop.session_expiry_interval = Some(srv_var.expr_interval); 
+    
+    let expr_interval = srv_var.expr_interval;
+    res_prop.session_expiry_interval = Some(expr_interval); 
+
     if is_generate_clid {
         res_prop.assigned_client_identifier = Some(clid.to_string())
     }

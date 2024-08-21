@@ -2,7 +2,7 @@ use std::sync::{atomic::{AtomicPtr, Ordering}, Arc};
 use tokio::{io, sync::RwLock};
 use crate::{connection::SocketWriter, helper::time::sys_now, message_broker::{cleanup::Cleanup, client::storage::{EventType, WALL}, Forwarder, SendStrategy}};
 use crate::protocol::v5::puback::{PubACKType, PubackPacket};
-use super::{client::Client, clobj::ClientID, SessionController};
+use super::{Client, clobj::ClientID, SessionController};
 
 pub type AtomicClient = Arc<AtomicPtr<Client>>;
 type MutexClients = RwLock<Vec<AtomicClient>>;

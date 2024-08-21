@@ -19,7 +19,7 @@ pub trait SocketReader {
     async fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize>;
     async fn read_timeout(&mut self, buffer: &mut [u8], dur: Duration) -> io::Result<usize> {
         match time::timeout(dur, self.read(buffer)).await {
-            Ok(v) => return v,
+            Ok(v) => v,
             Err(err) => Err(io::Error::new(io::ErrorKind::TimedOut, err.to_string()))
         }
     }

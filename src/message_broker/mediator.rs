@@ -20,10 +20,7 @@ use crate::protocol::{
 use crate::connection::SocketReader;
 use super::{
     cleanup::Cleanup, client::{
-        client::{Client, UpdateClient}, 
-        clients::{AtomicClient, Clients}, 
-        clobj::{ClientID, ClientSocket}, 
-        SessionController
+        clients::{AtomicClient, Clients}, clobj::{ClientID, ClientSocket}, Client, SessionController, UpdateClient
     }, message::{Message, Queue}, 
     router::{topicrouter::{RouterTree, TopicRouter}, SubscriberInstance}, 
     SendStrategy

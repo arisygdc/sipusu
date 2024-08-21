@@ -57,7 +57,7 @@ impl GetFromQueue<Message> for Queue {
 
 
 impl MQueue {
-    fn get<'a>(&'a self) -> DequeueMessage {
+    fn get(&self) -> DequeueMessage {
         DequeueMessage {
             queue: self,
             _marker: PhantomPinned

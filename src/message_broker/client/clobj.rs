@@ -6,7 +6,7 @@ use crate::{connection::{handshake::MqttConnectedResponse, line::{SecuredStream,
 
 use super::SessionController;
 
-#[derive(Debug, Eq, Ord, Clone)]
+#[derive(Debug, Eq, Clone)]
 pub struct ClientID {
     id: String,
     hash: u32,
@@ -80,14 +80,6 @@ impl PartialEq for ClientID {
         
         self.hash == other.hash
     }
-
-    fn ne(&self, other: &Self) -> bool {
-        if self.id.len() == other.id.len() {
-            return false;
-        }
-
-        self.hash != other.hash
-    }
 }
 
 impl PartialOrd for ClientID {
@@ -111,6 +103,27 @@ impl PartialOrd for ClientID {
         Some(self.hash.cmp(&other.hash))
     }
 }
+
+impl Ord for ClientID {
+    fn clamp(self, min: Self, max: Self) -> Self
+        where
+            Self: Sized,
+            Self: PartialOrd, {
+        assert!(min <= max);
+        if self < min {
+            min
+        } else if self > max {
+            max
+        } else {
+            self
+        }
+    }
+
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.hash.cmp(&other.hash)
+    }
+}
+
 
 pub struct Session {
     pub(super) ttl: u64,
@@ -218,8 +231,8 @@ impl SocketReader for Socket<SecuredStream, TcpStream> {
 
 impl MqttConnectedResponse for Socket<SecuredStream, TcpStream> {
     async fn connack<'a>(&'a mut self, ack: &'a ConnackPacket) -> io::Result<()> {
-        let mut packet = ack.encode().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let res = self.write_all(&mut packet).await;
-        res
+        let packet = ack.encode().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        
+        self.write_all(&packet).await
     }
 }

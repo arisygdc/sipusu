@@ -18,7 +18,7 @@ fn main() {
 
     let rt = match build_rt {
         Ok(v) => v,
-        Err(e) => panic!("[runtime] error: {}", e.to_string())
+        Err(e) => panic!("[runtime] error: {}", e)
     };
     
     rt.block_on(app())

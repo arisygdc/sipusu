@@ -69,7 +69,7 @@ impl<'lc, 'st> Clients {
         let clients = self.list.read().await;
 
         let idx = clients.binary_search_by(|c| unsafe {
-            (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
+            (*c.load(Ordering::Relaxed)).clid.cmp(clid)
         }).ok()?;
         
         let cl = unsafe {&mut (*clients[idx].load(Ordering::Relaxed))};
@@ -79,7 +79,7 @@ impl<'lc, 'st> Clients {
     pub async unsafe fn get_client(&self, clid: &ClientID) -> Option<AtomicClient> {
         let clients = self.list.read().await;
         let idx = clients.binary_search_by(|c| {
-            (*c.load(Ordering::Relaxed)).clid.cmp(&clid)
+            (*c.load(Ordering::Relaxed)).clid.cmp(clid)
         }).ok()?;
 
         Some(clients[idx].clone())
@@ -128,39 +128,39 @@ impl SendStrategy for Clients
             reason_code: 0x00
         };
         let buffer = ack.encode().unwrap();
-        self.pubish(&publisher, &buffer).await?;
+        self.pubish(publisher, &buffer).await?;
 
         // Wait Pub Rel
         // ...
         println!("TODO: wait pubrel");
 
         // Publish Message
-        self.pubish(&subscriber, &msg_buffer).await?;
+        self.pubish(subscriber, msg_buffer).await?;
         
         // Pub Comp
         ack.packet_type = PubACKType::PubRel;
         let buffer = ack.encode().unwrap();
-        self.pubish(&publisher, &buffer).await?;
+        self.pubish(publisher, &buffer).await?;
         Ok(())
     }
 }
 
 impl Forwarder for Clients {
     async fn pubish(&self, con_id: &ClientID, packet: &[u8]) -> io::Result<()> {
-        let found = self.search_mut_client(&con_id, |client| {
+        let found = self.search_mut_client(con_id, |client| {
             client.socket.write_all(packet)
         }).await;
     
-        let res = match found {
-            None => return Err(
+        
+    
+        match found {
+            None => Err(
                 io::Error::new(
                     io::ErrorKind::NotFound, 
                     format!("client {} not found", con_id)
                 )),
             Some(fut) => fut.await
-        };
-    
-        res
+        }
     }
 }
 
